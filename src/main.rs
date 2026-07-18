@@ -31,7 +31,14 @@ impl App {
     }
 
     fn handle_events(&mut self) -> Result<()> {
-        todo!()
+        if crossterm::event::poll(std::time::Duration::from_millis(50))? {
+            if let crossterm::event::Event::Key(key) = crossterm::event::read()? {
+                if key.code == crossterm::event::KeyCode::Char('q') {
+                    self.running = false;
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -71,7 +78,7 @@ fn main() -> Result<()> {
     let cmd = CommandBuilder::new(shell);
     let mut child = pair.slave.spawn_command(cmd)?;
     drop(pair.slave);
-    let pty_writer = Arc::new(Mutex::new(pair.master.take_writer()?));
+    let pty_writer = Arc::new(Mutex::new(Some(pair.master.take_writer()?)));
     let vpty = Arc::new(Mutex::new(vt100::Parser::default()));
     let vpt_clone = Arc::clone(&vpty);
     // let mut ptty_writer =  Arc::new(Mutex::new(pty_system::))
@@ -86,16 +93,17 @@ fn main() -> Result<()> {
                 Ok(0) => break, // EOF, shell exited
                 Ok(n) => {
                     vpt_clone.lock().unwrap().process(&buf[..n]);
-                    let screen = {
-                        let guard_screen = vpty.lock().unwrap();
-                        guard_screen.screen().clone()
-                    };
                 }
                 Err(_) => break,
             }
         }
     });
-    ratatui::run(|terminal| App::default().run(terminal))?;
+    let mut app = App {
+        vpty,
+        pty_writer,
+        running: true,
+    };
+    ratatui::run(|terminal| app.run(terminal))?;
     // Read and parse output from the pty with reader
 
     // Wait for the shell to exit.
