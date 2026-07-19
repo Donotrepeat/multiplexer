@@ -1,4 +1,5 @@
 use anyhow::{Error, Result};
+use crossterm::event::{KeyCode, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize, PtySystem};
 use ratatui::{
@@ -33,8 +34,30 @@ impl App {
     fn handle_events(&mut self) -> Result<()> {
         if crossterm::event::poll(std::time::Duration::from_millis(50))? {
             if let crossterm::event::Event::Key(key) = crossterm::event::read()? {
-                if key.code == crossterm::event::KeyCode::Char('q') {
+                if key.code == crossterm::event::KeyCode::Char('q')
+                    && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
+                {
                     self.running = false;
+                }
+                if let Some(ref mut w) = *self.pty_writer.lock().unwrap() {
+                    let _ = match key.code {
+                        KeyCode::Enter => w.write_all(b"\r"),
+                        KeyCode::Tab => w.write_all(b"\t"),
+                        KeyCode::Backspace => w.write_all(b"\x7f"),
+                        KeyCode::Esc => w.write_all(b"\x1b"),
+                        KeyCode::Up => w.write_all(b"\x1b[A"),
+                        KeyCode::Down => w.write_all(b"\x1b[B"),
+                        KeyCode::Right => w.write_all(b"\x1b[C"),
+                        KeyCode::Left => w.write_all(b"\x1b[D"),
+                        KeyCode::Home => w.write_all(b"\x1b[H"),
+                        KeyCode::End => w.write_all(b"\x1b[F"),
+                        KeyCode::Delete => w.write_all(b"\x1b[3~"),
+                        KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            w.write_all(&[c as u8 - b'a' + 1])
+                        }
+                        KeyCode::Char(c) => w.write_all(c.to_string().as_bytes()),
+                        _ => Ok(()),
+                    };
                 }
             }
         }
