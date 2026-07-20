@@ -1,7 +1,7 @@
-use anyhow::{Error, Result};
+use anyhow::Result;
 use crossterm::event::{KeyCode, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size};
-use portable_pty::{native_pty_system, CommandBuilder, PtySize, PtySystem};
+use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use ratatui::{
     style::{Color, Modifier, Style, Stylize},
     symbols::border,
@@ -10,15 +10,16 @@ use ratatui::{
     DefaultTerminal, Frame,
 };
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use vt100;
 
-#[derive(Default)]
 struct App {
     vpty: Arc<Mutex<vt100::Parser>>,
     pty_writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
+    pty_master: Box<dyn MasterPty>,
     running: bool,
+    screen_changed: Arc<AtomicBool>,
 }
 
 impl App {
@@ -26,39 +27,62 @@ impl App {
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         while self.running {
             terminal.draw(|frame| self.draw(frame))?;
-            self.handle_events()?;
+            let timeout = if self.screen_changed.swap(false, Ordering::Relaxed) {
+                std::time::Duration::ZERO
+            } else {
+                std::time::Duration::from_millis(5)
+            };
+            self.handle_events(timeout)?;
         }
         Ok(())
     }
 
-    fn handle_events(&mut self) -> Result<()> {
-        if crossterm::event::poll(std::time::Duration::from_millis(50))? {
-            if let crossterm::event::Event::Key(key) = crossterm::event::read()? {
-                if key.code == crossterm::event::KeyCode::Char('q')
-                    && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
-                {
-                    self.running = false;
+    fn handle_events(&mut self, timeout: std::time::Duration) -> Result<()> {
+        if crossterm::event::poll(timeout)? {
+            match crossterm::event::read()? {
+                crossterm::event::Event::Key(key) => {
+                    if key.code == crossterm::event::KeyCode::Char('q')
+                        && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
+                    {
+                        self.running = false;
+                    }
+                    if let Some(ref mut w) = *self.pty_writer.lock().unwrap() {
+                        let _ = match key.code {
+                            KeyCode::Enter => w.write_all(b"\r"),
+                            KeyCode::Tab => w.write_all(b"\t"),
+                            KeyCode::Backspace => w.write_all(b"\x7f"),
+                            KeyCode::Esc => w.write_all(b"\x1b"),
+                            KeyCode::Up => w.write_all(b"\x1b[A"),
+                            KeyCode::Down => w.write_all(b"\x1b[B"),
+                            KeyCode::Right => w.write_all(b"\x1b[C"),
+                            KeyCode::Left => w.write_all(b"\x1b[D"),
+                            KeyCode::Home => w.write_all(b"\x1b[H"),
+                            KeyCode::End => w.write_all(b"\x1b[F"),
+                            KeyCode::Delete => w.write_all(b"\x1b[3~"),
+                            KeyCode::Char(c)
+                                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                            {
+                                w.write_all(&[c as u8 - b'a' + 1])
+                            }
+                            KeyCode::Char(c) => w.write_all(c.to_string().as_bytes()),
+                            _ => Ok(()),
+                        };
+                    }
                 }
-                if let Some(ref mut w) = *self.pty_writer.lock().unwrap() {
-                    let _ = match key.code {
-                        KeyCode::Enter => w.write_all(b"\r"),
-                        KeyCode::Tab => w.write_all(b"\t"),
-                        KeyCode::Backspace => w.write_all(b"\x7f"),
-                        KeyCode::Esc => w.write_all(b"\x1b"),
-                        KeyCode::Up => w.write_all(b"\x1b[A"),
-                        KeyCode::Down => w.write_all(b"\x1b[B"),
-                        KeyCode::Right => w.write_all(b"\x1b[C"),
-                        KeyCode::Left => w.write_all(b"\x1b[D"),
-                        KeyCode::Home => w.write_all(b"\x1b[H"),
-                        KeyCode::End => w.write_all(b"\x1b[F"),
-                        KeyCode::Delete => w.write_all(b"\x1b[3~"),
-                        KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            w.write_all(&[c as u8 - b'a' + 1])
-                        }
-                        KeyCode::Char(c) => w.write_all(c.to_string().as_bytes()),
-                        _ => Ok(()),
-                    };
+                crossterm::event::Event::Resize(cols, rows) => {
+                    self.pty_master.resize(PtySize {
+                        rows,
+                        cols,
+                        pixel_width: 0,
+                        pixel_height: 0,
+                    })?;
+                    self.vpty
+                        .lock()
+                        .unwrap()
+                        .screen_mut()
+                        .set_size(rows, cols);
                 }
+                _ => {}
             }
         }
         Ok(())
@@ -80,18 +104,18 @@ impl App {
 
 fn main() -> Result<()> {
     enable_raw_mode()?;
+
+    let (term_rows, term_cols) = size()?;
+    let term_rows = term_rows.max(1);
+    let term_cols = term_cols.max(1);
+
     // Use the native pty implementation for the system
     let pty_system = native_pty_system();
 
     // Create a new pty
-    let mut pair = pty_system.openpty(PtySize {
-        rows: 24,
-        cols: 80,
-        // Not all systems support pixel_width, pixel_height,
-        // but it is good practice to set it to something
-        // that matches the size of the selected font.  That
-        // is more complex than can be shown here in this
-        // brief example though!
+    let pair = pty_system.openpty(PtySize {
+        rows: term_rows,
+        cols: term_cols,
         pixel_width: 0,
         pixel_height: 0,
     })?;
@@ -102,41 +126,45 @@ fn main() -> Result<()> {
     let mut child = pair.slave.spawn_command(cmd)?;
     drop(pair.slave);
     let pty_writer = Arc::new(Mutex::new(Some(pair.master.take_writer()?)));
-    let vpty = Arc::new(Mutex::new(vt100::Parser::default()));
+    let vpty = Arc::new(Mutex::new(vt100::Parser::new(
+        term_rows,
+        term_cols,
+        12,
+    )));
     let vpt_clone = Arc::clone(&vpty);
-    // let mut ptty_writer =  Arc::new(Mutex::new(pty_system::))
-    // create a reader
-    //
+
+    let screen_changed = Arc::new(AtomicBool::new(true));
+    let sc_clone = Arc::clone(&screen_changed);
+
     let mut reader = pair.master.try_clone_reader()?;
-    // spawn a task to read the output of the created shell
     let reader_thread = thread::spawn(move || {
         let mut buf = [0u8; 4096];
         loop {
             match reader.read(&mut buf) {
-                Ok(0) => break, // EOF, shell exited
+                Ok(0) => break,
                 Ok(n) => {
                     vpt_clone.lock().unwrap().process(&buf[..n]);
+                    sc_clone.store(true, Ordering::Relaxed);
                 }
                 Err(_) => break,
             }
         }
     });
+
     let mut app = App {
         vpty,
         pty_writer,
+        pty_master: pair.master,
         running: true,
+        screen_changed,
     };
     ratatui::run(|terminal| app.run(terminal))?;
-    // Read and parse output from the pty with reader
 
     // Wait for the shell to exit.
     child.wait()?;
 
     disable_raw_mode()?;
 
-    // These threads are blocked on blocking reads (stdin/PTY), so we don't
-    // strictly join them — the process exit will clean them up. For a real
-    // implementation you'd want a cleaner shutdown signal.
     drop(reader_thread);
 
     Ok(())
@@ -173,8 +201,8 @@ fn build_style(cell: &vt100::Cell) -> Style {
     }
     if cell.inverse() {
         // swap fg and bg
-        let fg = style.fg.unwrap();
-        style = style.fg(style.bg.unwrap());
+        let fg = style.fg.unwrap_or(Color::Reset);
+        style = style.fg(style.bg.unwrap_or(Color::Reset));
         style = style.bg(fg);
     }
 
@@ -183,8 +211,8 @@ fn build_style(cell: &vt100::Cell) -> Style {
 
 fn vterm_to_ratatui(screen: &vt100::Screen) -> Text<'static> {
     let size = screen.size();
-    let mut lines = Vec::new();
     let (rows, cols) = size;
+    let mut lines = Vec::with_capacity(rows as usize);
     // Build an empty fill row (spaces with default style) for the non-occupied area
     // Then iterate each row, then each column within that row
     for row in 0..rows {
