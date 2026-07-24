@@ -59,9 +59,7 @@ impl App {
                             KeyCode::Home => w.write_all(b"\x1b[H"),
                             KeyCode::End => w.write_all(b"\x1b[F"),
                             KeyCode::Delete => w.write_all(b"\x1b[3~"),
-                            KeyCode::Char(c)
-                                if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                            {
+                            KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) => {
                                 w.write_all(&[c as u8 - b'a' + 1])
                             }
                             KeyCode::Char(c) => w.write_all(c.to_string().as_bytes()),
@@ -76,11 +74,7 @@ impl App {
                         pixel_width: 0,
                         pixel_height: 0,
                     })?;
-                    self.vpty
-                        .lock()
-                        .unwrap()
-                        .screen_mut()
-                        .set_size(rows, cols);
+                    self.vpty.lock().unwrap().screen_mut().set_size(rows, cols);
                 }
                 _ => {}
             }
@@ -126,11 +120,7 @@ fn main() -> Result<()> {
     let mut child = pair.slave.spawn_command(cmd)?;
     drop(pair.slave);
     let pty_writer = Arc::new(Mutex::new(Some(pair.master.take_writer()?)));
-    let vpty = Arc::new(Mutex::new(vt100::Parser::new(
-        term_rows,
-        term_cols,
-        12,
-    )));
+    let vpty = Arc::new(Mutex::new(vt100::Parser::new(term_rows, term_cols, 12)));
     let vpt_clone = Arc::clone(&vpty);
 
     let screen_changed = Arc::new(AtomicBool::new(true));
@@ -217,17 +207,24 @@ fn vterm_to_ratatui(screen: &vt100::Screen) -> Text<'static> {
     // Then iterate each row, then each column within that row
     for row in 0..rows {
         let mut spans = vec![];
-        for mut col in 0..cols {
+        let mut col: u16 = 0;
+        while col < cols {
             match screen.cell(row, col) {
                 Some(cell) if !cell.is_wide_continuation() => {
                     let style = build_style(cell);
-                    spans.push(Span::styled(cell.contents().to_string(), style));
+                    let content = if cell.has_contents() {
+                        cell.contents().to_string()
+                    } else {
+                        " ".to_string()
+                    };
+                    spans.push(Span::styled(content, style));
                     if cell.is_wide() {
                         col += 1;
-                    } // skip continuation
+                    }
                 }
                 _ => spans.push(Span::raw(" ")),
             }
+            col += 1;
         }
         lines.push(Line::from(spans));
     }
