@@ -14,6 +14,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+mod app;
+
+use app::pane::Pane;
+
+struct Appnew {
+    panes: Vec<Pane>,
+    active: usize,
+    running: bool,
+}
 struct App {
     vpty: Arc<Mutex<vt100::Parser>>,
     pty_writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
