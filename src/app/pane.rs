@@ -6,9 +6,9 @@ use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use std::thread;
 
 pub struct Pane {
-    vpty: Arc<Mutex<vt100::Parser>>,
-    pty_writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
-    pty_master: Box<dyn MasterPty>,
+    pub vpty: Arc<Mutex<vt100::Parser>>,
+    pub pty_writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
+    pub pty_master: Box<dyn MasterPty>,
     screen_changed: Arc<AtomicBool>,
 }
 

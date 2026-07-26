@@ -15,11 +15,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-#[derive(Debug)]
-struct App {
-    panes: Vec<pane::Pane>,
-    running: bool,
-    active: usize,
+use pane::Pane;
+
+pub struct App {
+    pub panes: Vec<pane::Pane>,
+    pub running: bool,
+    pub active: usize,
 }
 
 impl App {
@@ -37,7 +38,20 @@ impl App {
                     {
                         self.running = false;
                     }
-                    if let Some(ref mut w) = *self.pty_writer.lock().unwrap() {
+                    if key.code == KeyCode::Char('t') && key.modifiers.contains(ALT) {
+                        let pane_count = self.panes.len();
+                        let area = frame_area; // need to store or calculate
+                        let new_cols = area.width / (pane_count + 1) as u16;
+                        if new_cols < 20 {
+                            // Too narrow to split — ignore or flash a message
+                            return Ok(());
+                        }
+                        let new_rows = area.height - 2; // subtract top+bottom border
+                        let new_pane = Pane::new(new_rows, new_cols)?;
+                        self.panes.push(new_pane);
+                        self.active = self.panes.len() - 1;
+                    }
+                    if let Some(ref mut w) = *self.panes[self.active].pty_writer.lock().unwrap() {
                         let _ = match key.code {
                             KeyCode::Enter => w.write_all(b"\r"),
                             KeyCode::Tab => w.write_all(b"\t"),
@@ -59,30 +73,39 @@ impl App {
                     }
                 }
                 crossterm::event::Event::Resize(cols, rows) => {
-                    self.pty_master.resize(PtySize {
+                    self.panes[self.active].pty_master.resize(PtySize {
                         rows,
                         cols,
                         pixel_width: 0,
                         pixel_height: 0,
                     })?;
-                    self.vpty.lock().unwrap().screen_mut().set_size(rows, cols);
+                    self.panes[self.active]
+                        .vpty
+                        .lock()
+                        .unwrap()
+                        .screen_mut()
+                        .set_size(rows, cols);
                 }
                 _ => {}
             }
         }
         Ok(())
     }
-    fn draw(&self, frame: &mut Frame) {
-        let screen = self.vpty.lock().unwrap().screen().clone();
-        let text = vterm_to_ratatui(&screen);
 
-        let block = Block::bordered()
-            .title(" multiplexer ".bold())
-            .border_set(border::THICK);
-        let paragraph = Paragraph::new(text).block(block);
-        frame.render_widget(paragraph, frame.area());
+    fn draw(&self, frame: &mut Frame) {
+        for pane in self.panes {
+            let screen = pane.vpty.lock().unwrap().screen().clone();
+            let text = vterm_to_ratatui(&screen);
+
+            let block = Block::bordered()
+                .title(" multiplexer ".bold())
+                .border_set(border::THICK);
+            let paragraph = Paragraph::new(text).block(block);
+            frame.render_widget(paragraph, frame.area());
+        }
     }
 }
+
 fn build_style(cell: &vt100::Cell) -> Style {
     let mut style = Style::default();
 
