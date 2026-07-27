@@ -38,15 +38,17 @@ impl App {
                     {
                         self.running = false;
                     }
-                    if key.code == KeyCode::Char('t') && key.modifiers.contains(ALT) {
+                    if key.code == KeyCode::Char('t')
+                        && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
+                    {
                         let pane_count = self.panes.len();
-                        let area = frame_area; // need to store or calculate
-                        let new_cols = area.width / (pane_count + 1) as u16;
+                        let area = self.panes[self.active].pty_master.get_size().unwrap(); // need to store or calculate
+                        let new_cols = area.pixel_width / (pane_count + 1) as u16;
                         if new_cols < 20 {
                             // Too narrow to split — ignore or flash a message
                             return Ok(());
                         }
-                        let new_rows = area.height - 2; // subtract top+bottom border
+                        let new_rows = area.pixel_height - 2; // subtract top+bottom border
                         let new_pane = Pane::new(new_rows, new_cols)?;
                         self.panes.push(new_pane);
                         self.active = self.panes.len() - 1;
