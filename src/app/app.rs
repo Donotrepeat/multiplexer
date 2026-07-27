@@ -2,6 +2,7 @@ use crate::app::pane;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size};
+use pane::Pane;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use ratatui::{
     style::{Color, Modifier, Style, Stylize},
@@ -15,17 +16,27 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use pane::Pane;
-
 pub struct App {
     pub panes: Vec<pane::Pane>,
     pub running: bool,
     pub active: usize,
 }
-
 impl App {
     /// runs the application's main loop until the user quits
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+        while self.running {
+            terminal.draw(|frame| self.draw(frame))?;
+            let any_changed = self
+                .panes
+                .iter()
+                .any(|p| p.screen_changed.swap(false, Ordering::Relaxed));
+            let timeout = if any_changed {
+                std::time::Duration::ZERO
+            } else {
+                std::time::Duration::from_millis(16)
+            };
+            self.handle_events(timeout);
+        }
         Ok(())
     }
 

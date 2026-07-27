@@ -9,7 +9,7 @@ pub struct Pane {
     pub vpty: Arc<Mutex<vt100::Parser>>,
     pub pty_writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
     pub pty_master: Box<dyn MasterPty>,
-    screen_changed: Arc<AtomicBool>,
+    pub screen_changed: Arc<AtomicBool>,
 }
 
 impl Pane {
