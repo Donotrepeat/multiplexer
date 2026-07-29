@@ -28,7 +28,7 @@ fn main() -> Result<()> {
 
     // Use the native pty implementation for the system
     let mut app = App {
-        panes: vec![Pane::new(term_rows, term_cols)],
+        panes: vec![Pane::new(term_rows, term_cols).unwrap()],
         running: true,
         active: 0,
     };

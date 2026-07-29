@@ -1,20 +1,18 @@
 use crate::app::pane;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyModifiers};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size};
 use pane::Pane;
-use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
+use portable_pty::PtySize;
 use ratatui::{
+    layout::Rect,
     style::{Color, Modifier, Style, Stylize},
     symbols::border,
     text::{Line, Span, Text},
     widgets::{Block, Paragraph},
     DefaultTerminal, Frame,
 };
-use std::io::{Read, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::thread;
+use std::io::Write;
+use std::sync::atomic::Ordering;
 
 pub struct App {
     pub panes: Vec<pane::Pane>,
@@ -53,13 +51,13 @@ impl App {
                         && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
                     {
                         let pane_count = self.panes.len();
-                        let area = self.panes[self.active].pty_master.get_size().unwrap(); // need to store or calculate
-                        let new_cols = area.pixel_width / (pane_count + 1) as u16;
-                        if new_cols < 20 {
+                        let size = self.panes[self.active].pty_master.get_size().unwrap();
+                        let new_cols = size.cols / (pane_count + 1) as u16;
+                        let new_rows = size.rows.saturating_sub(2) - 2;
+                        if new_cols < 2 {
                             // Too narrow to split — ignore or flash a message
                             return Ok(());
                         }
-                        let new_rows = area.pixel_height - 2; // subtract top+bottom border
                         let new_pane = Pane::new(new_rows, new_cols)?;
                         self.panes.push(new_pane);
                         self.active = self.panes.len() - 1;
@@ -106,17 +104,43 @@ impl App {
     }
 
     fn draw(&self, frame: &mut Frame) {
-        for pane in self.panes {
-            let screen = pane.vpty.lock().unwrap().screen().clone();
-            let text = vterm_to_ratatui(&screen);
+        let area = frame.area();
+        let total_panes = self.panes.len();
 
-            let block = Block::bordered()
-                .title(" multiplexer ".bold())
-                .border_set(border::THICK);
-            let paragraph = Paragraph::new(text).block(block);
-            frame.render_widget(paragraph, frame.area());
+        match total_panes {
+            1 => {
+                // Single pane - fill entire screen (current behavior)
+                if let Some(pane) = self.panes.first() {
+                    render_pane(pane, frame, area);
+                }
+            }
+            2 => {
+                // Two panes - split horizontally
+                let chunk_size = area.height / 2;
+                let top_area = Rect::new(area.x, area.y, area.width, chunk_size);
+                let bottom_area = Rect::new(
+                    area.x,
+                    area.y + chunk_size,
+                    area.width,
+                    area.height - chunk_size,
+                );
+
+                render_pane(&self.panes[0], frame, top_area);
+                render_pane(&self.panes[1], frame, bottom_area);
+            }
+            3.. => {
+                // Three or more - create a basic grid
+                // Calculate rows/cols and render each pane in its position
+            }
+            _ => {}
         }
     }
+}
+fn render_pane(pane: &Pane, frame: &mut Frame, area: Rect) {
+    let screen = pane.vpty.lock().unwrap().screen().clone();
+    let text = vterm_to_ratatui(&screen);
+    let paragraph = Paragraph::new(text).block(Block::bordered());
+    frame.render_widget(paragraph, area);
 }
 
 fn build_style(cell: &vt100::Cell) -> Style {

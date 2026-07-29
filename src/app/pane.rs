@@ -1,7 +1,8 @@
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use anyhow::Result;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use std::thread;
 
@@ -13,7 +14,7 @@ pub struct Pane {
 }
 
 impl Pane {
-    pub fn new(row: u16, coll: u16) -> Self {
+    pub fn new(row: u16, coll: u16) -> Result<Self> {
         let pty_system = native_pty_system();
 
         // Create a new pty
@@ -50,11 +51,11 @@ impl Pane {
                 }
             }
         });
-        Pane {
+        Ok(Pane {
             vpty: vpty,
             pty_writer,
             pty_master: pair.master,
             screen_changed,
-        }
+        })
     }
 }
