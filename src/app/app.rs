@@ -47,6 +47,15 @@ impl App {
                     {
                         self.running = false;
                     }
+                    if key.code == KeyCode::Char('n')
+                        && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
+                    {
+                        if self.active == (self.panes.len() - 1) {
+                            self.active -= 1;
+                        } else {
+                            self.active += 1;
+                        }
+                    }
                     if key.code == KeyCode::Char('t')
                         && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
                     {
