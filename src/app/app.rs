@@ -3,10 +3,10 @@ use anyhow::Result;
 use crossterm::event::{KeyCode, KeyModifiers};
 use pane::Pane;
 use portable_pty::PtySize;
+use ratatui::prelude::Position;
 use ratatui::{
-    layout::Rect,
-    style::{Color, Modifier, Style, Stylize},
-    symbols::border,
+    layout::{Margin, Rect},
+    style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Paragraph},
     DefaultTerminal, Frame,
@@ -34,6 +34,9 @@ impl App {
                 std::time::Duration::from_millis(16)
             };
             self.handle_events(timeout);
+            for pane in self.panes.iter_mut() {
+                pane.scroll_to_input();
+            }
         }
         Ok(())
     }
@@ -46,8 +49,7 @@ impl App {
                         && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
                     {
                         self.running = false;
-                    }
-                    if key.code == KeyCode::Char('n')
+                    } else if key.code == KeyCode::Char('n')
                         && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
                     {
                         if self.active == (self.panes.len() - 1) {
@@ -55,8 +57,7 @@ impl App {
                         } else {
                             self.active += 1;
                         }
-                    }
-                    if key.code == KeyCode::Char('t')
+                    } else if key.code == KeyCode::Char('t')
                         && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
                     {
                         let pane_count = self.panes.len();
@@ -70,26 +71,67 @@ impl App {
                         let new_pane = Pane::new(new_rows, new_cols)?;
                         self.panes.push(new_pane);
                         self.active = self.panes.len() - 1;
-                    }
-                    if let Some(ref mut w) = *self.panes[self.active].pty_writer.lock().unwrap() {
-                        let _ = match key.code {
-                            KeyCode::Enter => w.write_all(b"\r"),
-                            KeyCode::Tab => w.write_all(b"\t"),
-                            KeyCode::Backspace => w.write_all(b"\x7f"),
-                            KeyCode::Esc => w.write_all(b"\x1b"),
-                            KeyCode::Up => w.write_all(b"\x1b[A"),
-                            KeyCode::Down => w.write_all(b"\x1b[B"),
-                            KeyCode::Right => w.write_all(b"\x1b[C"),
-                            KeyCode::Left => w.write_all(b"\x1b[D"),
-                            KeyCode::Home => w.write_all(b"\x1b[H"),
-                            KeyCode::End => w.write_all(b"\x1b[F"),
-                            KeyCode::Delete => w.write_all(b"\x1b[3~"),
-                            KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                w.write_all(&[c as u8 - b'a' + 1])
+                    } else {
+                        // Handle all key events for the active pane
+                        let mut handled = false;
+
+                        // Handle scroll keys first - use active index before any borrows
+                        if key.code == KeyCode::Home {
+                            // Handle Home for scrolling to top
+                            let active = self.active;
+                            self.panes[active].scroll_to_top();
+                            handled = true;
+                        } else if key.code == KeyCode::End {
+                            // Handle End for scrolling to bottom
+                            let active = self.active;
+                            self.panes[active].scroll_to_bottom();
+                            handled = true;
+                        } else if key.code == KeyCode::PageUp {
+                            // Handle PageUp for scrolling up
+                            let active = self.active;
+                            let visible = self.panes[active].visible_lines();
+                            self.panes[active].scroll_up(visible);
+                            handled = true;
+                        } else if key.code == KeyCode::PageDown {
+                            // Handle PageDown for scrolling down
+                            let active = self.active;
+                            let visible = self.panes[active].visible_lines();
+                            self.panes[active].scroll_down(visible);
+                            handled = true;
+                        } else {
+                            // Handle normal character input
+                            let active = self.active;
+                            // Get mutable reference and write to the pane
+                            if let Some(active_pane) = self.panes.get_mut(active) {
+                                if let Some(ref mut w) = *active_pane.pty_writer.lock().unwrap() {
+                                    match key.code {
+                                        KeyCode::Enter => w.write_all(b"\r")?,
+                                        KeyCode::Tab => w.write_all(b"\t")?,
+                                        KeyCode::Backspace => w.write_all(b"\x7f")?,
+                                        KeyCode::Esc => w.write_all(b"\x1b")?,
+                                        KeyCode::Up => w.write_all(b"\x1b[A")?,
+                                        KeyCode::Down => w.write_all(b"\x1b[B")?,
+                                        KeyCode::Right => w.write_all(b"\x1b[C")?,
+                                        KeyCode::Left => w.write_all(b"\x1b[D")?,
+                                        KeyCode::Delete => w.write_all(b"\x1b[3~")?,
+                                        KeyCode::Char(c)
+                                            if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                                        {
+                                            w.write_all(&[c as u8 - b'a' + 1])?;
+                                        }
+                                        KeyCode::Char(c) => {
+                                            w.write_all(c.to_string().as_bytes())?
+                                        }
+                                        _ => {}
+                                    };
+                                }
                             }
-                            KeyCode::Char(c) => w.write_all(c.to_string().as_bytes()),
-                            _ => Ok(()),
-                        };
+                        }
+
+                        // If we handled a scroll key, return early to prevent other writes
+                        if handled {
+                            return Ok(());
+                        }
                     }
                 }
                 crossterm::event::Event::Resize(cols, rows) => {
@@ -105,6 +147,10 @@ impl App {
                         .unwrap()
                         .screen_mut()
                         .set_size(rows, cols);
+                    // Reset scroll position on resize to maintain relative position
+                    let active = self.active;
+                    let scroll_offset = self.panes[active].get_scroll_offset();
+                    self.panes[active].set_scroll_offset(scroll_offset);
                 }
                 _ => {}
             }
@@ -120,7 +166,7 @@ impl App {
             1 => {
                 // Single pane - fill entire screen (current behavior)
                 if let Some(pane) = self.panes.first() {
-                    render_pane(pane, frame, area);
+                    render_pane(pane, frame, area, true);
                 }
             }
             2 => {
@@ -134,8 +180,8 @@ impl App {
                     area.height - chunk_size,
                 );
 
-                render_pane(&self.panes[0], frame, top_area);
-                render_pane(&self.panes[1], frame, bottom_area);
+                render_pane(&self.panes[0], frame, top_area, self.active == 0);
+                render_pane(&self.panes[1], frame, bottom_area, self.active == 1);
             }
             3.. => {
                 // Three or more - create a basic grid
@@ -145,13 +191,26 @@ impl App {
         }
     }
 }
-fn render_pane(pane: &Pane, frame: &mut Frame, area: Rect) {
-    let screen = pane.vpty.lock().unwrap().screen().clone();
-    let text = vterm_to_ratatui(&screen);
-    let paragraph = Paragraph::new(text).block(Block::bordered());
-    frame.render_widget(paragraph, area);
-}
+fn render_pane(pane: &Pane, frame: &mut Frame, area: Rect, is_active: bool) {
+    let parser = pane.vpty.lock().unwrap();
+    let screen = parser.screen();
+    let (visible_rows, _cols) = screen.size();
+    let text = vterm_to_ratatui(screen, pane.scroll_offset, visible_rows as usize);
+    frame.render_widget(Paragraph::new(text).block(Block::bordered()), area);
 
+    if is_active {
+        let (row, col) = screen.cursor_position();
+        let inner = area.inner(Margin {
+            horizontal: 1,
+            vertical: 1,
+        });
+        if row as usize >= pane.scroll_offset {
+            let x = (inner.x + col).min(inner.right() - 1);
+            let y = (inner.y + row - pane.scroll_offset as u16).min(inner.bottom() - 1);
+            frame.set_cursor_position(Position::new(x, y));
+        }
+    }
+}
 fn build_style(cell: &vt100::Cell) -> Style {
     let mut style = Style::default();
 
@@ -191,17 +250,23 @@ fn build_style(cell: &vt100::Cell) -> Style {
     style
 }
 
-fn vterm_to_ratatui(screen: &vt100::Screen) -> Text<'static> {
+fn vterm_to_ratatui(
+    screen: &vt100::Screen,
+    scroll_offset: usize,
+    visible_rows: usize,
+) -> Text<'static> {
     let size = screen.size();
-    let (rows, cols) = size;
-    let mut lines = Vec::with_capacity(rows as usize);
+    let (_rows, cols) = size;
+    let mut lines = Vec::with_capacity(visible_rows);
     // Build an empty fill row (spaces with default style) for the non-occupied area
     // Then iterate each row, then each column within that row
-    for row in 0..rows {
+    for row in 0..visible_rows as u16 {
         let mut spans = vec![];
         let mut col: u16 = 0;
         while col < cols {
-            match screen.cell(row, col) {
+            // Adjust row index based on scroll position
+            let adjusted_row = (scroll_offset as u16).saturating_add(row);
+            match screen.cell(adjusted_row, col) {
                 Some(cell) if !cell.is_wide_continuation() => {
                     let style = build_style(cell);
                     let content = if cell.has_contents() {
