@@ -34,8 +34,9 @@ impl App {
                 std::time::Duration::from_millis(16)
             };
             self.handle_events(timeout);
+            let num_panes = self.panes.len();
             for pane in self.panes.iter_mut() {
-                pane.scroll_to_input();
+                pane.scroll_to_input(num_panes);
             }
         }
         Ok(())
@@ -62,13 +63,19 @@ impl App {
                     {
                         let pane_count = self.panes.len();
                         let size = self.panes[self.active].pty_master.get_size().unwrap();
-                        let new_cols = size.cols / (pane_count + 1) as u16;
-                        let new_rows = size.rows.saturating_sub(2) - 2;
+                        let new_rows = size.rows / (pane_count + 1) as u16;
+                        let new_cols = size.cols.saturating_sub(2) - 2;
                         if new_cols < 2 {
                             // Too narrow to split — ignore or flash a message
                             return Ok(());
                         }
                         let new_pane = Pane::new(new_rows, new_cols)?;
+                        self.panes[self.active].pty_master.resize(PtySize {
+                            rows: new_rows,
+                            cols: new_cols,
+                            pixel_width: 0,
+                            pixel_height: 0,
+                        });
                         self.panes.push(new_pane);
                         self.active = self.panes.len() - 1;
                     } else {
