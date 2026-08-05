@@ -91,8 +91,8 @@ impl Pane {
         let parser = self.vpty.lock().unwrap();
         let screen = parser.screen();
         let row = screen.cursor_position().0 as usize;
-        let a = screen.size().0 as usize - 6 - 1 * num_panes;
-        self.scroll_offset = row.saturating_sub(a.saturating_div(5 * num_panes));
+        let a = screen.size().0 as usize - 4;
+        self.scroll_offset = row.saturating_sub(a);
     }
     // Scroll to top (offset = 0)
     pub fn scroll_to_top(&mut self) {
