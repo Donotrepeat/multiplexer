@@ -35,8 +35,8 @@ impl App {
             };
             self.handle_events(timeout);
             let num_panes = self.panes.len();
-            for pane in self.panes.iter_mut() {
-                pane.scroll_to_input(num_panes);
+            for (idx, pane) in self.panes.iter_mut().enumerate() {
+                pane.scroll_to_input(num_panes, idx);
             }
         }
         Ok(())
@@ -76,6 +76,12 @@ impl App {
                             pixel_width: 0,
                             pixel_height: 0,
                         });
+                        self.panes[self.active]
+                            .vpty
+                            .lock()
+                            .unwrap()
+                            .screen_mut()
+                            .set_size(new_rows, new_cols);
                         self.panes.push(new_pane);
                         self.active = self.panes.len() - 1;
                     } else {

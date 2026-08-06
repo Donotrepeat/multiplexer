@@ -87,7 +87,7 @@ impl Pane {
         let new_offset = current.saturating_sub(lines);
         self.set_scroll_offset(new_offset);
     }
-    pub fn scroll_to_input(&mut self, num_panes: usize) {
+    pub fn scroll_to_input(&mut self, num_panes: usize, active_id: usize) {
         let parser = self.vpty.lock().unwrap();
         let screen = parser.screen();
         let row = screen.cursor_position().0 as usize;
