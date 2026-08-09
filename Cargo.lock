@@ -680,6 +680,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "crossterm",
+ "log",
  "portable-pty",
  "ratatui",
  "vt100",

@@ -116,6 +116,7 @@ impl Pane {
         let mut parser = self.vpty.lock().unwrap();
         parser.screen_mut().set_scrollback(offset);
         self.scroll_offset = offset;
+        log::debug!("offset {offset}");
     }
 
     // Get current scroll offset from vt100 parser
@@ -128,6 +129,7 @@ impl Pane {
     pub fn scroll_up(&mut self, lines: usize) {
         let current = self.get_scroll_offset();
         let new_offset = current.saturating_add(lines);
+        log::debug!("{new_offset} new offset");
         self.set_scroll_offset(new_offset);
     }
 
@@ -151,14 +153,14 @@ impl Pane {
 
     // Scroll to bottom (offset = max scrollback)
     pub fn scroll_to_bottom(&mut self) {
-        self.set_scroll_offset(1200);
+        self.set_scroll_offset(1200 - self.visible_lines());
     }
 
     // Get number of visible lines (terminal height)
     pub fn visible_lines(&self) -> usize {
         let parser = self.vpty.lock().unwrap();
         let size = parser.screen().size();
-        size.0 as usize
+        size.0 as usize - 4
     }
 
     // Check if at top (offset = 0)

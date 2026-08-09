@@ -18,12 +18,12 @@ pub struct App {
     pub panes: Vec<pane::Pane>,
     pub running: bool,
     pub active: usize,
+    pub home: bool,
 }
 impl App {
     /// runs the application's main loop until the user quits
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         while self.running {
-            terminal.draw(|frame| self.draw(frame))?;
             let any_changed = self
                 .panes
                 .iter()
@@ -34,10 +34,13 @@ impl App {
                 std::time::Duration::from_millis(16)
             };
             self.handle_events(timeout);
-            let num_panes = self.panes.len();
-            for (idx, pane) in self.panes.iter_mut().enumerate() {
-                pane.scroll_to_input(num_panes, idx);
+            if self.home {
+                let num_panes = self.panes.len();
+                for (idx, pane) in self.panes.iter_mut().enumerate() {
+                    pane.scroll_to_input(num_panes, idx);
+                }
             }
+            terminal.draw(|frame| self.draw(frame))?;
         }
         Ok(())
     }
@@ -94,23 +97,33 @@ impl App {
                             let active = self.active;
                             self.panes[active].scroll_to_top();
                             handled = true;
+                            self.home = true;
                         } else if key.code == KeyCode::End {
                             // Handle End for scrolling to bottom
                             let active = self.active;
                             self.panes[active].scroll_to_bottom();
                             handled = true;
+
+                            self.home = false;
                         } else if key.code == KeyCode::PageUp {
                             // Handle PageUp for scrolling up
                             let active = self.active;
                             let visible = self.panes[active].visible_lines();
-                            self.panes[active].scroll_up(visible);
+                            log::debug!("visible {visible}");
+                            self.panes[active].scroll_up(1);
                             handled = true;
+                            self.home = false;
                         } else if key.code == KeyCode::PageDown {
                             // Handle PageDown for scrolling down
                             let active = self.active;
                             let visible = self.panes[active].visible_lines();
                             self.panes[active].scroll_down(visible);
                             handled = true;
+                            if self.panes[self.active].at_bottom() {
+                                self.home = true;
+                            } else {
+                                self.home = false;
+                            }
                         } else {
                             // Handle normal character input
                             let active = self.active;
