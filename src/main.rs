@@ -18,7 +18,7 @@ fn main() -> Result<()> {
     let term_cols = term_cols.max(1);
 
     let mut app = App {
-        panes: vec![Pane::new(term_rows, term_cols - 4).unwrap()],
+        panes: vec![Pane::new(term_rows - 2, term_cols - 4).unwrap()],
         running: true,
         active: 0,
         home: true,

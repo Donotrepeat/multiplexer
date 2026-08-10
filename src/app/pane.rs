@@ -143,7 +143,8 @@ impl Pane {
         let parser = self.vpty.lock().unwrap();
         let screen = parser.screen();
         let row = screen.cursor_position().0 as usize;
-        let a = screen.size().0 as usize - 4;
+        let a = screen.size().0 as usize;
+
         self.scroll_offset = row.saturating_sub(a);
     }
     // Scroll to top (offset = 0)
@@ -153,7 +154,7 @@ impl Pane {
 
     // Scroll to bottom (offset = max scrollback)
     pub fn scroll_to_bottom(&mut self) {
-        self.set_scroll_offset(1200 - self.visible_lines());
+        self.set_scroll_offset(1200);
     }
 
     // Get number of visible lines (terminal height)

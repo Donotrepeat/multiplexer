@@ -291,8 +291,7 @@ fn vterm_to_ratatui(
         let mut col: u16 = 0;
         while col < cols {
             // Adjust row index based on scroll position
-            let adjusted_row = (scroll_offset as u16).saturating_add(row);
-            match screen.cell(adjusted_row, col) {
+            match screen.cell(row, col) {
                 Some(cell) if !cell.is_wide_continuation() => {
                     let style = build_style(cell);
                     let content = if cell.has_contents() {
