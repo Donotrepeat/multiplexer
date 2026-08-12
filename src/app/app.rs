@@ -66,7 +66,7 @@ impl App {
                     {
                         let pane_count = self.panes.len();
                         let size = self.panes[self.active].pty_master.get_size().unwrap();
-                        let new_rows = size.rows / (pane_count + 1) as u16;
+                        let new_rows = size.rows / (pane_count + 1) as u16 - 1;
                         let new_cols = size.cols.saturating_sub(2) - 2;
                         if new_cols < 2 {
                             // Too narrow to split — ignore or flash a message
