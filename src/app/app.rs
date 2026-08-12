@@ -14,6 +14,7 @@ use ratatui::{
 use std::io::Write;
 use std::sync::atomic::Ordering;
 
+//TODO add tabs for other groups on panes
 pub struct App {
     pub panes: Vec<pane::Pane>,
     pub running: bool,
@@ -61,6 +62,8 @@ impl App {
                         } else {
                             self.active += 1;
                         }
+                        //TOOD add keybinding for creating a tab
+                        //And switching between tabs
                     } else if key.code == KeyCode::Char('t')
                         && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
                     {
@@ -87,6 +90,7 @@ impl App {
                             .set_size(new_rows, new_cols);
                         self.panes.push(new_pane);
                         self.active = self.panes.len() - 1;
+                        //TODO add keybinding to change horizontally to vertical
                     } else {
                         // Handle all key events for the active pane
                         let mut handled = false;
@@ -210,6 +214,7 @@ impl App {
                 render_pane(&self.panes[1], frame, bottom_area, self.active == 1);
             }
             3.. => {
+                //TODO add multi panes and grid structure
                 // Three or more - create a basic grid
                 // Calculate rows/cols and render each pane in its position
             }
