@@ -17,7 +17,7 @@ impl Tab {
     pub fn new(row: u16, coll: u16) -> Self {
         Self {
             panes: vec![Pane::new(row, coll).unwrap()],
-            active: 1,
+            active: 0,
             grid: Grid::HORIZONTALE,
         }
     }

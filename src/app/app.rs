@@ -1,4 +1,5 @@
 use crate::app::pane;
+use crate::app::tabs::Tab;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyModifiers};
 use pane::Pane;
@@ -16,9 +17,8 @@ use std::sync::atomic::Ordering;
 
 //TODO add tabs for other groups on panes
 pub struct App {
-    pub panes: Vec<pane::Pane>,
+    pub tabs: Vec<Tab>,
     pub running: bool,
-    pub active: usize,
     pub home: bool,
 }
 impl App {
@@ -26,6 +26,9 @@ impl App {
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         while self.running {
             let any_changed = self
+                .tabs
+                .first()
+                .unwrap()
                 .panes
                 .iter()
                 .any(|p| p.screen_changed.swap(false, Ordering::Relaxed));
@@ -36,8 +39,8 @@ impl App {
             };
             self.handle_events(timeout);
             if self.home {
-                let num_panes = self.panes.len();
-                for (idx, pane) in self.panes.iter_mut().enumerate() {
+                let num_panes = self.tabs.first().unwrap().panes.len();
+                for (idx, pane) in self.tabs.first_mut().unwrap().panes.iter_mut().enumerate() {
                     pane.scroll_to_input(num_panes, idx);
                 }
             }
@@ -57,18 +60,24 @@ impl App {
                     } else if key.code == KeyCode::Char('n')
                         && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
                     {
-                        if self.active == (self.panes.len() - 1) {
-                            self.active -= 1;
+                        if self.tabs.first().unwrap().active
+                            == (self.tabs.first().unwrap().panes.len() - 1)
+                        {
+                            self.tabs.first_mut().unwrap().active -= 1;
                         } else {
-                            self.active += 1;
+                            self.tabs.first_mut().unwrap().active += 1;
                         }
                         //TOOD add keybinding for creating a tab
                         //And switching between tabs
                     } else if key.code == KeyCode::Char('t')
                         && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
                     {
-                        let pane_count = self.panes.len();
-                        let size = self.panes[self.active].pty_master.get_size().unwrap();
+                        let pane_count = self.tabs.first().unwrap().panes.len();
+                        let size = self.tabs.first().unwrap().panes
+                            [self.tabs.first().unwrap().active]
+                            .pty_master
+                            .get_size()
+                            .unwrap();
                         let new_rows = size.rows / (pane_count + 1) as u16 - 1;
                         let new_cols = size.cols.saturating_sub(2) - 2;
                         if new_cols < 2 {
@@ -76,20 +85,23 @@ impl App {
                             return Ok(());
                         }
                         let new_pane = Pane::new(new_rows, new_cols)?;
-                        self.panes[self.active].pty_master.resize(PtySize {
-                            rows: new_rows,
-                            cols: new_cols,
-                            pixel_width: 0,
-                            pixel_height: 0,
-                        });
-                        self.panes[self.active]
+                        self.tabs.first().unwrap().panes[self.tabs.first().unwrap().active]
+                            .pty_master
+                            .resize(PtySize {
+                                rows: new_rows,
+                                cols: new_cols,
+                                pixel_width: 0,
+                                pixel_height: 0,
+                            });
+                        self.tabs.first().unwrap().panes[self.tabs.first().unwrap().active]
                             .vpty
                             .lock()
                             .unwrap()
                             .screen_mut()
                             .set_size(new_rows, new_cols);
-                        self.panes.push(new_pane);
-                        self.active = self.panes.len() - 1;
+                        self.tabs.first_mut().unwrap().panes.push(new_pane);
+                        self.tabs.first_mut().unwrap().active =
+                            self.tabs.first().unwrap().panes.len() - 1;
                         //TODO add keybinding to change horizontally to vertical
                     } else {
                         // Handle all key events for the active pane
@@ -98,41 +110,45 @@ impl App {
                         // Handle scroll keys first - use active index before any borrows
                         if key.code == KeyCode::Home {
                             // Handle Home for scrolling to top
-                            let active = self.active;
-                            self.panes[active].scroll_to_top();
+                            let active = self.tabs.first().unwrap().active;
+                            self.tabs.first_mut().unwrap().panes[active].scroll_to_top();
                             handled = true;
                             self.home = true;
                         } else if key.code == KeyCode::End {
                             // Handle End for scrolling to bottom
-                            let active = self.active;
-                            self.panes[active].scroll_to_bottom();
+                            let active = self.tabs.first().unwrap().active;
+                            self.tabs.first_mut().unwrap().panes[active].scroll_to_bottom();
                             handled = true;
 
                             self.home = false;
                         } else if key.code == KeyCode::PageUp {
                             // Handle PageUp for scrolling up
-                            let active = self.active;
-                            let visible = self.panes[active].visible_lines();
+                            let active = self.tabs.first().unwrap().active;
+                            let visible = self.tabs.first().unwrap().panes[active].visible_lines();
                             log::debug!("visible {visible}");
-                            self.panes[active].scroll_up(1);
+                            self.tabs.first_mut().unwrap().panes[active].scroll_up(1);
                             handled = true;
                             self.home = false;
                         } else if key.code == KeyCode::PageDown {
                             // Handle PageDown for scrolling down
-                            let active = self.active;
-                            let visible = self.panes[active].visible_lines();
-                            self.panes[active].scroll_down(visible);
+                            let active = self.tabs.first().unwrap().active;
+                            let visible = self.tabs.first().unwrap().panes[active].visible_lines();
+                            self.tabs.first_mut().unwrap().panes[active].scroll_down(visible);
                             handled = true;
-                            if self.panes[self.active].at_bottom() {
+                            if self.tabs.first().unwrap().panes[self.tabs.first().unwrap().active]
+                                .at_bottom()
+                            {
                                 self.home = true;
                             } else {
                                 self.home = false;
                             }
                         } else {
                             // Handle normal character input
-                            let active = self.active;
+                            let active = self.tabs.first().unwrap().active;
                             // Get mutable reference and write to the pane
-                            if let Some(active_pane) = self.panes.get_mut(active) {
+                            if let Some(active_pane) =
+                                self.tabs.first_mut().unwrap().panes.get_mut(active)
+                            {
                                 if let Some(ref mut w) = *active_pane.pty_writer.lock().unwrap() {
                                     match key.code {
                                         KeyCode::Enter => w.write_all(b"\r")?,
@@ -165,22 +181,25 @@ impl App {
                     }
                 }
                 crossterm::event::Event::Resize(cols, rows) => {
-                    self.panes[self.active].pty_master.resize(PtySize {
-                        rows,
-                        cols,
-                        pixel_width: 0,
-                        pixel_height: 0,
-                    })?;
-                    self.panes[self.active]
+                    self.tabs.first().unwrap().panes[self.tabs.first().unwrap().active]
+                        .pty_master
+                        .resize(PtySize {
+                            rows,
+                            cols,
+                            pixel_width: 0,
+                            pixel_height: 0,
+                        })?;
+                    self.tabs.first().unwrap().panes[self.tabs.first().unwrap().active]
                         .vpty
                         .lock()
                         .unwrap()
                         .screen_mut()
                         .set_size(rows, cols);
                     // Reset scroll position on resize to maintain relative position
-                    let active = self.active;
-                    let scroll_offset = self.panes[active].get_scroll_offset();
-                    self.panes[active].set_scroll_offset(scroll_offset);
+                    let active = self.tabs.first().unwrap().active;
+                    let scroll_offset =
+                        self.tabs.first().unwrap().panes[active].get_scroll_offset();
+                    self.tabs.first_mut().unwrap().panes[active].set_scroll_offset(scroll_offset);
                 }
                 _ => {}
             }
@@ -190,12 +209,12 @@ impl App {
 
     fn draw(&self, frame: &mut Frame) {
         let area = frame.area();
-        let total_panes = self.panes.len();
+        let total_panes = self.tabs.first().unwrap().panes.len();
 
         match total_panes {
             1 => {
                 // Single pane - fill entire screen (current behavior)
-                if let Some(pane) = self.panes.first() {
+                if let Some(pane) = self.tabs.first().unwrap().panes.first() {
                     render_pane(pane, frame, area, true);
                 }
             }
@@ -210,8 +229,18 @@ impl App {
                     area.height - chunk_size,
                 );
 
-                render_pane(&self.panes[0], frame, top_area, self.active == 0);
-                render_pane(&self.panes[1], frame, bottom_area, self.active == 1);
+                render_pane(
+                    &self.tabs.first().unwrap().panes[0],
+                    frame,
+                    top_area,
+                    self.tabs.first().unwrap().active == 0,
+                );
+                render_pane(
+                    &self.tabs.first().unwrap().panes[1],
+                    frame,
+                    bottom_area,
+                    self.tabs.first().unwrap().active == 1,
+                );
             }
             3.. => {
                 //TODO add multi panes and grid structure

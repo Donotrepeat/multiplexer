@@ -8,6 +8,8 @@ mod logging;
 use app::app::App;
 use app::pane::Pane;
 
+use crate::app::tabs;
+
 fn main() -> Result<()> {
     logging::init(LevelFilter::Trace)
         .map_err(|e| anyhow::anyhow!("failed to init logger: {e:?}"))?;
@@ -18,9 +20,8 @@ fn main() -> Result<()> {
     let term_cols = term_cols.max(1);
 
     let mut app = App {
-        panes: vec![Pane::new(term_rows - 2, term_cols - 4).unwrap()],
+        tabs: vec![tabs::Tab::new(term_rows - 2, term_cols - 4)],
         running: true,
-        active: 0,
         home: true,
     };
     ratatui::run(|terminal| app.run(terminal))?;
