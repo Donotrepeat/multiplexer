@@ -1,6 +1,6 @@
 use crate::app::pane;
 use crate::app::tabs::Tab;
-use anyhow::Result;
+use anyhow::{Ok, Result};
 use crossterm::event::{KeyCode, KeyModifiers};
 use pane::Pane;
 use portable_pty::PtySize;
@@ -12,6 +12,8 @@ use ratatui::{
     widgets::{Block, Paragraph},
     DefaultTerminal, Frame,
 };
+
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size};
 use std::io::Write;
 use std::sync::atomic::Ordering;
 
@@ -19,6 +21,7 @@ use std::sync::atomic::Ordering;
 pub struct App {
     pub tabs: Vec<Tab>,
     pub running: bool,
+    pub active_tab: usize,
     pub home: bool,
 }
 impl App {
@@ -27,7 +30,7 @@ impl App {
         while self.running {
             let any_changed = self
                 .tabs
-                .first()
+                .get(self.active_tab)
                 .unwrap()
                 .panes
                 .iter()
@@ -38,9 +41,16 @@ impl App {
                 std::time::Duration::from_millis(16)
             };
             self.handle_events(timeout);
-            if self.home {
-                let num_panes = self.tabs.first().unwrap().panes.len();
-                for (idx, pane) in self.tabs.first_mut().unwrap().panes.iter_mut().enumerate() {
+            if !self.home {
+                let num_panes = self.tabs.get(self.active_tab).unwrap().panes.len();
+                for (idx, pane) in self
+                    .tabs
+                    .get_mut(self.active_tab)
+                    .unwrap()
+                    .panes
+                    .iter_mut()
+                    .enumerate()
+                {
                     pane.scroll_to_input(num_panes, idx);
                 }
             }
@@ -57,24 +67,36 @@ impl App {
                         && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
                     {
                         self.running = false;
+                    } else if key.code == crossterm::event::KeyCode::Char('c')
+                        && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
+                    {
+                        let (term_cols, term_rows) = size()?;
+                        let term_rows = term_rows.max(1);
+                        let term_cols = term_cols.max(1);
+
+                        self.tabs.push(Tab::new(term_rows - 2, term_cols - 4));
+
+                        self.active_tab = 1;
+
+                        return Ok(());
                     } else if key.code == KeyCode::Char('n')
                         && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
                     {
-                        if self.tabs.first().unwrap().active
-                            == (self.tabs.first().unwrap().panes.len() - 1)
+                        if self.tabs.get(self.active_tab).unwrap().active
+                            == (self.tabs.get(self.active_tab).unwrap().panes.len() - 1)
                         {
-                            self.tabs.first_mut().unwrap().active -= 1;
+                            self.tabs.get_mut(self.active_tab).unwrap().active -= 1;
                         } else {
-                            self.tabs.first_mut().unwrap().active += 1;
+                            self.tabs.get_mut(self.active_tab).unwrap().active += 1;
                         }
                         //TOOD add keybinding for creating a tab
                         //And switching between tabs
                     } else if key.code == KeyCode::Char('t')
                         && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
                     {
-                        let pane_count = self.tabs.first().unwrap().panes.len();
-                        let size = self.tabs.first().unwrap().panes
-                            [self.tabs.first().unwrap().active]
+                        let pane_count = self.tabs.get(self.active_tab).unwrap().panes.len();
+                        let size = self.tabs.get(self.active_tab).unwrap().panes
+                            [self.tabs.get(self.active_tab).unwrap().active]
                             .pty_master
                             .get_size()
                             .unwrap();
@@ -85,7 +107,8 @@ impl App {
                             return Ok(());
                         }
                         let new_pane = Pane::new(new_rows, new_cols)?;
-                        self.tabs.first().unwrap().panes[self.tabs.first().unwrap().active]
+                        self.tabs.get(self.active_tab).unwrap().panes
+                            [self.tabs.get(self.active_tab).unwrap().active]
                             .pty_master
                             .resize(PtySize {
                                 rows: new_rows,
@@ -93,15 +116,20 @@ impl App {
                                 pixel_width: 0,
                                 pixel_height: 0,
                             });
-                        self.tabs.first().unwrap().panes[self.tabs.first().unwrap().active]
+                        self.tabs.get(self.active_tab).unwrap().panes
+                            [self.tabs.get(self.active_tab).unwrap().active]
                             .vpty
                             .lock()
                             .unwrap()
                             .screen_mut()
                             .set_size(new_rows, new_cols);
-                        self.tabs.first_mut().unwrap().panes.push(new_pane);
-                        self.tabs.first_mut().unwrap().active =
-                            self.tabs.first().unwrap().panes.len() - 1;
+                        self.tabs
+                            .get_mut(self.active_tab)
+                            .unwrap()
+                            .panes
+                            .push(new_pane);
+                        self.tabs.get_mut(self.active_tab).unwrap().active =
+                            self.tabs.get(self.active_tab).unwrap().panes.len() - 1;
                         //TODO add keybinding to change horizontally to vertical
                     } else {
                         // Handle all key events for the active pane
@@ -110,32 +138,38 @@ impl App {
                         // Handle scroll keys first - use active index before any borrows
                         if key.code == KeyCode::Home {
                             // Handle Home for scrolling to top
-                            let active = self.tabs.first().unwrap().active;
-                            self.tabs.first_mut().unwrap().panes[active].scroll_to_top();
+                            let active = self.tabs.get(self.active_tab).unwrap().active;
+                            self.tabs.get_mut(self.active_tab).unwrap().panes[active]
+                                .scroll_to_top();
                             handled = true;
                             self.home = true;
                         } else if key.code == KeyCode::End {
                             // Handle End for scrolling to bottom
-                            let active = self.tabs.first().unwrap().active;
-                            self.tabs.first_mut().unwrap().panes[active].scroll_to_bottom();
+                            let active = self.tabs.get(self.active_tab).unwrap().active;
+                            self.tabs.get_mut(self.active_tab).unwrap().panes[active]
+                                .scroll_to_bottom();
                             handled = true;
 
                             self.home = false;
                         } else if key.code == KeyCode::PageUp {
                             // Handle PageUp for scrolling up
-                            let active = self.tabs.first().unwrap().active;
-                            let visible = self.tabs.first().unwrap().panes[active].visible_lines();
+                            let active = self.tabs.get(self.active_tab).unwrap().active;
+                            let visible = self.tabs.get(self.active_tab).unwrap().panes[active]
+                                .visible_lines();
                             log::debug!("visible {visible}");
-                            self.tabs.first_mut().unwrap().panes[active].scroll_up(1);
+                            self.tabs.get_mut(self.active_tab).unwrap().panes[active].scroll_up(1);
                             handled = true;
                             self.home = false;
                         } else if key.code == KeyCode::PageDown {
                             // Handle PageDown for scrolling down
-                            let active = self.tabs.first().unwrap().active;
-                            let visible = self.tabs.first().unwrap().panes[active].visible_lines();
-                            self.tabs.first_mut().unwrap().panes[active].scroll_down(visible);
+                            let active = self.tabs.get(self.active_tab).unwrap().active;
+                            let visible = self.tabs.get(self.active_tab).unwrap().panes[active]
+                                .visible_lines();
+                            self.tabs.get_mut(self.active_tab).unwrap().panes[active]
+                                .scroll_down(visible);
                             handled = true;
-                            if self.tabs.first().unwrap().panes[self.tabs.first().unwrap().active]
+                            if self.tabs.get(self.active_tab).unwrap().panes
+                                [self.tabs.get(self.active_tab).unwrap().active]
                                 .at_bottom()
                             {
                                 self.home = true;
@@ -144,10 +178,14 @@ impl App {
                             }
                         } else {
                             // Handle normal character input
-                            let active = self.tabs.first().unwrap().active;
+                            let active = self.tabs.get(self.active_tab).unwrap().active;
                             // Get mutable reference and write to the pane
-                            if let Some(active_pane) =
-                                self.tabs.first_mut().unwrap().panes.get_mut(active)
+                            if let Some(active_pane) = self
+                                .tabs
+                                .get_mut(self.active_tab)
+                                .unwrap()
+                                .panes
+                                .get_mut(active)
                             {
                                 if let Some(ref mut w) = *active_pane.pty_writer.lock().unwrap() {
                                     match key.code {
@@ -181,7 +219,8 @@ impl App {
                     }
                 }
                 crossterm::event::Event::Resize(cols, rows) => {
-                    self.tabs.first().unwrap().panes[self.tabs.first().unwrap().active]
+                    self.tabs.get(self.active_tab).unwrap().panes
+                        [self.tabs.get(self.active_tab).unwrap().active]
                         .pty_master
                         .resize(PtySize {
                             rows,
@@ -189,17 +228,19 @@ impl App {
                             pixel_width: 0,
                             pixel_height: 0,
                         })?;
-                    self.tabs.first().unwrap().panes[self.tabs.first().unwrap().active]
+                    self.tabs.get(self.active_tab).unwrap().panes
+                        [self.tabs.get(self.active_tab).unwrap().active]
                         .vpty
                         .lock()
                         .unwrap()
                         .screen_mut()
                         .set_size(rows, cols);
                     // Reset scroll position on resize to maintain relative position
-                    let active = self.tabs.first().unwrap().active;
+                    let active = self.tabs.get(self.active_tab).unwrap().active;
                     let scroll_offset =
-                        self.tabs.first().unwrap().panes[active].get_scroll_offset();
-                    self.tabs.first_mut().unwrap().panes[active].set_scroll_offset(scroll_offset);
+                        self.tabs.get(self.active_tab).unwrap().panes[active].get_scroll_offset();
+                    self.tabs.get_mut(self.active_tab).unwrap().panes[active]
+                        .set_scroll_offset(scroll_offset);
                 }
                 _ => {}
             }
@@ -209,12 +250,18 @@ impl App {
 
     fn draw(&self, frame: &mut Frame) {
         let area = frame.area();
-        let total_panes = self.tabs.first().unwrap().panes.len();
+        let total_panes = self.tabs.get(self.active_tab).unwrap().panes.len();
 
         match total_panes {
             1 => {
                 // Single pane - fill entire screen (current behavior)
-                if let Some(pane) = self.tabs.first().unwrap().panes.first() {
+                if let Some(pane) = self
+                    .tabs
+                    .get(self.active_tab)
+                    .unwrap()
+                    .panes
+                    .get(self.tabs.get(self.active_tab).unwrap().active)
+                {
                     render_pane(pane, frame, area, true);
                 }
             }
@@ -230,16 +277,16 @@ impl App {
                 );
 
                 render_pane(
-                    &self.tabs.first().unwrap().panes[0],
+                    &self.tabs.get(self.active_tab).unwrap().panes[0],
                     frame,
                     top_area,
-                    self.tabs.first().unwrap().active == 0,
+                    self.tabs.get(self.active_tab).unwrap().active == 0,
                 );
                 render_pane(
-                    &self.tabs.first().unwrap().panes[1],
+                    &self.tabs.get(self.active_tab).unwrap().panes[1],
                     frame,
                     bottom_area,
-                    self.tabs.first().unwrap().active == 1,
+                    self.tabs.get(self.active_tab).unwrap().active == 1,
                 );
             }
             3.. => {

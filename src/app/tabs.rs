@@ -15,6 +15,7 @@ pub struct Tab {
 
 impl Tab {
     pub fn new(row: u16, coll: u16) -> Self {
+        log::debug!("screen {row},{coll}");
         Self {
             panes: vec![Pane::new(row, coll).unwrap()],
             active: 0,
