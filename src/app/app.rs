@@ -76,9 +76,18 @@ impl App {
 
                         self.tabs.push(Tab::new(term_rows - 2, term_cols - 4));
 
-                        self.active_tab = 1;
+                        self.active_tab += 1;
 
                         return Ok(());
+                    } else if key.code == KeyCode::Char('e')
+                        && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
+                    {
+                        let tab_count = self.tabs.len() - 1;
+                        if self.active_tab == tab_count {
+                            self.active_tab = 0;
+                        } else {
+                            self.active_tab += 1;
+                        }
                     } else if key.code == KeyCode::Char('n')
                         && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
                     {
