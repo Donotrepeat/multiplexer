@@ -5,7 +5,14 @@ use std::usize;
 
 use anyhow::Result;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
-
+use ratatui::prelude::Position;
+use ratatui::{
+    layout::{Margin, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span, Text},
+    widgets::{Block, Paragraph},
+    DefaultTerminal, Frame,
+};
 pub struct MuxCallbacks {
     writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
 }
@@ -173,8 +180,102 @@ impl Pane {
     pub fn at_bottom(&self) -> bool {
         self.get_scroll_offset() >= 1200
     }
+    pub fn render_pane(&self, frame: &mut Frame, area: Rect, is_active: bool) {
+        let parser = self.vpty.lock().unwrap();
+        let screen = parser.screen();
+        let (visible_rows, _cols) = screen.size();
+        let text = vterm_to_ratatui(screen, self.scroll_offset, visible_rows as usize);
+        frame.render_widget(Paragraph::new(text).block(Block::bordered()), area);
+
+        if is_active {
+            let (row, col) = screen.cursor_position();
+            let inner = area.inner(Margin {
+                horizontal: 1,
+                vertical: 1,
+            });
+            if row as usize >= self.scroll_offset {
+                let x = (inner.x + col).min(inner.right() - 1);
+                let y = (inner.y + row - self.scroll_offset as u16).min(inner.bottom() - 1);
+                frame.set_cursor_position(Position::new(x, y));
+            }
+        }
+    }
+}
+fn build_style(cell: &vt100::Cell) -> Style {
+    let mut style = Style::default();
+
+    // fg color
+    style = style.fg(match cell.fgcolor() {
+        vt100::Color::Default => Color::Reset,
+        vt100::Color::Idx(n) => Color::Indexed(n),
+        vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
+    });
+
+    // bg color
+    style = style.bg(match cell.bgcolor() {
+        vt100::Color::Default => Color::Reset,
+        vt100::Color::Idx(n) => Color::Indexed(n),
+        vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
+    });
+
+    if cell.bold() {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    if cell.italic() {
+        style = style.add_modifier(Modifier::ITALIC);
+    }
+    if cell.underline() {
+        style = style.add_modifier(Modifier::UNDERLINED);
+    }
+    if cell.dim() {
+        style = style.add_modifier(Modifier::DIM);
+    }
+    if cell.inverse() {
+        // swap fg and bg
+        let fg = style.fg.unwrap_or(Color::Reset);
+        style = style.fg(style.bg.unwrap_or(Color::Reset));
+        style = style.bg(fg);
+    }
+
+    style
 }
 
+fn vterm_to_ratatui(
+    screen: &vt100::Screen,
+    scroll_offset: usize,
+    visible_rows: usize,
+) -> Text<'static> {
+    let size = screen.size();
+    let (_rows, cols) = size;
+    let mut lines = Vec::with_capacity(visible_rows);
+    // Build an empty fill row (spaces with default style) for the non-occupied area
+    // Then iterate each row, then each column within that row
+    for row in 0..visible_rows as u16 {
+        let mut spans = vec![];
+        let mut col: u16 = 0;
+        while col < cols {
+            // Adjust row index based on scroll position
+            match screen.cell(row, col) {
+                Some(cell) if !cell.is_wide_continuation() => {
+                    let style = build_style(cell);
+                    let content = if cell.has_contents() {
+                        cell.contents().to_string()
+                    } else {
+                        " ".to_string()
+                    };
+                    spans.push(Span::styled(content, style));
+                    if cell.is_wide() {
+                        col += 1;
+                    }
+                }
+                _ => spans.push(Span::raw(" ")),
+            }
+            col += 1;
+        }
+        lines.push(Line::from(spans));
+    }
+    Text::from(lines)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
