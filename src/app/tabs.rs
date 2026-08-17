@@ -22,4 +22,15 @@ impl Tab {
             grid: Grid::HORIZONTALE,
         }
     }
+
+    //TODO match the new shape, resize the panes and place them on there new spot
+    pub fn reshape(&mut self, new_shape: Grid) {
+        match new_shape {
+            Grid::HORIZONTALE => {}
+            Grid::SQUIRE => {}
+            Grid::GOLDER => {}
+            Grid::VERTICAL => {}
+        }
+        self.grid = new_shape;
+    }
 }

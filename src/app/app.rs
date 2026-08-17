@@ -17,7 +17,6 @@ use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size};
 use std::io::Write;
 use std::sync::atomic::Ordering;
 
-//TODO add tabs for other groups on panes
 pub struct App {
     pub tabs: Vec<Tab>,
     pub running: bool,
@@ -63,7 +62,7 @@ impl App {
         if crossterm::event::poll(timeout)? {
             match crossterm::event::read()? {
                 crossterm::event::Event::Key(key) => {
-                    if key.code == crossterm::event::KeyCode::Char('q')
+                    if key.code == crossterm::event::KeyCode::Char('w')
                         && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
                     {
                         self.running = false;
@@ -88,6 +87,15 @@ impl App {
                         } else {
                             self.active_tab += 1;
                         }
+                    } else if key.code == KeyCode::Char('q')
+                        && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
+                    {
+                        let tab_count = self.tabs.len() - 1;
+                        if self.active_tab == 0 {
+                            self.active_tab = tab_count;
+                        } else {
+                            self.active_tab -= 1;
+                        }
                     } else if key.code == KeyCode::Char('n')
                         && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
                     {
@@ -98,8 +106,6 @@ impl App {
                         } else {
                             self.tabs.get_mut(self.active_tab).unwrap().active += 1;
                         }
-                        //TOOD add keybinding for creating a tab
-                        //And switching between tabs
                     } else if key.code == KeyCode::Char('t')
                         && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
                     {
@@ -261,6 +267,7 @@ impl App {
         let area = frame.area();
         let total_panes = self.tabs.get(self.active_tab).unwrap().panes.len();
 
+        //TODO move to tab
         match total_panes {
             1 => {
                 // Single pane - fill entire screen (current behavior)
@@ -307,6 +314,8 @@ impl App {
         }
     }
 }
+
+//TODO move to pane
 fn render_pane(pane: &Pane, frame: &mut Frame, area: Rect, is_active: bool) {
     let parser = pane.vpty.lock().unwrap();
     let screen = parser.screen();
@@ -327,6 +336,8 @@ fn render_pane(pane: &Pane, frame: &mut Frame, area: Rect, is_active: bool) {
         }
     }
 }
+
+//TODO move to pane
 fn build_style(cell: &vt100::Cell) -> Style {
     let mut style = Style::default();
 
@@ -365,7 +376,7 @@ fn build_style(cell: &vt100::Cell) -> Style {
 
     style
 }
-
+//TODO move to pane
 fn vterm_to_ratatui(
     screen: &vt100::Screen,
     scroll_offset: usize,
