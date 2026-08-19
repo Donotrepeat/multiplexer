@@ -11,7 +11,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Paragraph},
-    DefaultTerminal, Frame,
+    Frame,
 };
 pub struct MuxCallbacks {
     writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,

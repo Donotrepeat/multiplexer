@@ -1,12 +1,25 @@
 use crate::app::pane::Pane;
+use strum::{EnumIter, IntoEnumIterator};
 
+#[derive(EnumIter)]
 pub enum Grid {
     HORIZONTALE,
     VERTICAL,
     SQUIRE,
     GOLDER,
 }
-
+impl Grid {
+    pub fn next(&self) -> Self {
+        let mut iter = Grid::iter();
+        let current = std::mem::discriminant(self);
+        loop {
+            let variant = iter.next().unwrap();
+            if std::mem::discriminant(&variant) == current {
+                return iter.next().unwrap_or_else(|| Grid::iter().next().unwrap());
+            }
+        }
+    }
+}
 pub struct Tab {
     pub panes: Vec<Pane>,
     pub active: usize,

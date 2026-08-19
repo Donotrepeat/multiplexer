@@ -683,6 +683,7 @@ dependencies = [
  "log",
  "portable-pty",
  "ratatui",
+ "strum",
  "vt100",
  "vte",
 ]

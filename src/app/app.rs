@@ -4,16 +4,9 @@ use anyhow::{Ok, Result};
 use crossterm::event::{KeyCode, KeyModifiers};
 use pane::Pane;
 use portable_pty::PtySize;
-use ratatui::prelude::Position;
-use ratatui::{
-    layout::{Margin, Rect},
-    style::{Color, Modifier, Style},
-    text::{Line, Span, Text},
-    widgets::{Block, Paragraph},
-    DefaultTerminal, Frame,
-};
+use ratatui::{layout::Rect, DefaultTerminal, Frame};
 
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size};
+use crossterm::terminal::size;
 use std::io::Write;
 use std::sync::atomic::Ordering;
 
@@ -96,6 +89,11 @@ impl App {
                         } else {
                             self.active_tab -= 1;
                         }
+                    } else if key.code == KeyCode::Char('j')
+                        && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
+                    {
+                        let tab = self.tabs.get_mut(self.active_tab).unwrap();
+                        tab.grid = tab.grid.next();
                     } else if key.code == KeyCode::Char('n')
                         && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
                     {
