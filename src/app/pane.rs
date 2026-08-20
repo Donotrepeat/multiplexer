@@ -176,6 +176,17 @@ impl Pane {
         self.get_scroll_offset() == 0
     }
 
+    pub fn resize(&mut self, rows: u16, cols: u16) {
+        self.pty_master
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+    }
+
     // Check if at bottom
     pub fn at_bottom(&self) -> bool {
         self.get_scroll_offset() >= 1200

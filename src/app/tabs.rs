@@ -1,4 +1,5 @@
 use crate::app::pane::Pane;
+use crossterm::terminal::size;
 use strum::{EnumIter, IntoEnumIterator};
 
 #[derive(EnumIter)]
@@ -37,13 +38,26 @@ impl Tab {
     }
 
     //TODO match the new shape, resize the panes and place them on there new spot
-    pub fn reshape(&mut self, new_shape: Grid) {
-        match new_shape {
-            Grid::HORIZONTALE => {}
+    pub fn reshape(&mut self) {
+        let size_term = size().unwrap();
+        let pane_count = self.panes.len();
+        match self.grid {
+            Grid::HORIZONTALE => {
+                let new_rows = size_term.0.saturating_div(pane_count as u16);
+                let new_colls = size_term.1 - 2;
+                for term in &mut self.panes {
+                    term.resize(new_rows, new_colls);
+                }
+            }
             Grid::SQUIRE => {}
             Grid::GOLDER => {}
-            Grid::VERTICAL => {}
+            Grid::VERTICAL => {
+                let new_rows = size_term.0 - 2;
+                let new_colls = size_term.1.saturating_div(pane_count as u16);
+                for term in &mut self.panes {
+                    term.resize(new_rows, new_colls);
+                }
+            }
         }
-        self.grid = new_shape;
     }
 }

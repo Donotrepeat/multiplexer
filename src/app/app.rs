@@ -94,6 +94,7 @@ impl App {
                     {
                         let tab = self.tabs.get_mut(self.active_tab).unwrap();
                         tab.grid = tab.grid.next();
+                        tab.reshape();
                     } else if key.code == KeyCode::Char('n')
                         && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
                     {
