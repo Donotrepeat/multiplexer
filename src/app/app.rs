@@ -263,51 +263,6 @@ impl App {
     }
 
     fn draw(&self, frame: &mut Frame) {
-        let area = frame.area();
-        let total_panes = self.tabs.get(self.active_tab).unwrap().panes.len();
-
-        //TODO move to tab
-        match total_panes {
-            1 => {
-                // Single pane - fill entire screen (current behavior)
-                if let Some(pane) = self
-                    .tabs
-                    .get(self.active_tab)
-                    .unwrap()
-                    .panes
-                    .get(self.tabs.get(self.active_tab).unwrap().active)
-                {
-                    pane.render_pane(frame, area, true);
-                }
-            }
-            2 => {
-                // Two panes - split horizontally
-                let chunk_size = area.height / 2;
-                let top_area = Rect::new(area.x, area.y, area.width, chunk_size);
-                let bottom_area = Rect::new(
-                    area.x,
-                    area.y + chunk_size,
-                    area.width,
-                    area.height - chunk_size,
-                );
-
-                &self.tabs.get(self.active_tab).unwrap().panes[0].render_pane(
-                    frame,
-                    top_area,
-                    self.tabs.get(self.active_tab).unwrap().active == 0,
-                );
-                &self.tabs.get(self.active_tab).unwrap().panes[1].render_pane(
-                    frame,
-                    bottom_area,
-                    self.tabs.get(self.active_tab).unwrap().active == 1,
-                );
-            }
-            3.. => {
-                //TODO add multi panes and grid structure
-                // Three or more - create a basic grid
-                // Calculate rows/cols and render each pane in its position
-            }
-            _ => {}
-        }
+        self.tabs[self.active_tab].draw_tab(frame);
     }
 }

@@ -1,5 +1,6 @@
 use crate::app::pane::Pane;
 use crossterm::terminal::size;
+use ratatui::{layout::Rect, Frame};
 use strum::{EnumIter, IntoEnumIterator};
 
 #[derive(EnumIter)]
@@ -34,6 +35,59 @@ impl Tab {
             panes: vec![Pane::new(row, coll).unwrap()],
             active: 0,
             grid: Grid::HORIZONTALE,
+        }
+    }
+
+    pub fn draw_tab(&self, frame: &mut Frame) {
+        let total_panes = self.panes.len();
+        let area = frame.area();
+        match total_panes {
+            1 => {
+                // Single pane - fill entire screen (current behavior)
+                if let Some(pane) = self.panes.get(self.active) {
+                    pane.render_pane(frame, area, true);
+                }
+            }
+            2.. => {
+                // Two panes - split horizontally
+                match self.grid {
+                    Grid::HORIZONTALE => {
+                        let chunk_size = area.height.saturating_div(total_panes as u16);
+                        let top_area = Rect::new(area.x, area.y, area.width, chunk_size);
+
+                        self.panes[0].render_pane(frame, top_area, self.active == 0);
+                        for i in 0..total_panes {
+                            let next_area = Rect::new(
+                                area.x,
+                                area.y + chunk_size * i as u16,
+                                area.width,
+                                area.height - chunk_size * i as u16,
+                            );
+
+                            self.panes[i].render_pane(frame, next_area, self.active == i);
+                        }
+                    }
+                    Grid::SQUIRE => {}
+                    Grid::GOLDER => {}
+                    Grid::VERTICAL => {
+                        let chunk_size = area.width.saturating_div(total_panes as u16);
+                        let top_area = Rect::new(area.x, area.y, chunk_size, area.height);
+
+                        self.panes[0].render_pane(frame, top_area, self.active == 0);
+                        for i in 0..total_panes {
+                            let next_area = Rect::new(
+                                area.x + chunk_size * i as u16,
+                                area.y,
+                                area.width - chunk_size * i as u16,
+                                area.height,
+                            );
+
+                            self.panes[i].render_pane(frame, next_area, self.active == i);
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
