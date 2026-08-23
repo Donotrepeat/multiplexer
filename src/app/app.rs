@@ -90,7 +90,7 @@ impl App {
                         && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
                     {
                         if self.get_tab().active == (self.get_tab().panes.len() - 1) {
-                            self.get_mut_tab().active -= 1;
+                            self.get_mut_tab().active = 0;
                         } else {
                             self.get_mut_tab().active += 1;
                         }
@@ -129,7 +129,6 @@ impl App {
                             .panes
                             .push(new_pane);
                         self.get_mut_tab().active = self.get_tab().panes.len() - 1;
-                        //TODO add keybinding to change horizontally to vertical
                     } else {
                         // Handle all key events for the active pane
                         let mut handled = false;

@@ -1,7 +1,6 @@
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::usize;
 
 use anyhow::Result;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};

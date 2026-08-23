@@ -53,15 +53,14 @@ impl Tab {
                 match self.grid {
                     Grid::HORIZONTALE => {
                         let chunk_size = area.height.saturating_div(total_panes as u16);
-                        let top_area = Rect::new(area.x, area.y, area.width, chunk_size);
 
-                        self.panes[0].render_pane(frame, top_area, self.active == 0);
-                        for i in 0..total_panes {
+                        self.panes[0].render_pane(frame, Rect::new(area.x, area.y, area.width, chunk_size), self.active == 0);
+                        for i in 1..total_panes {
                             let next_area = Rect::new(
                                 area.x,
                                 area.y + chunk_size * i as u16,
                                 area.width,
-                                area.height - chunk_size * i as u16,
+                                chunk_size,
                             );
 
                             self.panes[i].render_pane(frame, next_area, self.active == i);
@@ -74,11 +73,11 @@ impl Tab {
                         let top_area = Rect::new(area.x, area.y, chunk_size, area.height);
 
                         self.panes[0].render_pane(frame, top_area, self.active == 0);
-                        for i in 0..total_panes {
+                        for i in 1..total_panes {
                             let next_area = Rect::new(
                                 area.x + chunk_size * i as u16,
                                 area.y,
-                                area.width - chunk_size * i as u16,
+                                chunk_size,
                                 area.height,
                             );
 
