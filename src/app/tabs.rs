@@ -95,12 +95,16 @@ impl Tab {
     }
 
     pub fn reshape(&mut self) {
-        let size_term = size().unwrap();
+        let (col, row) = size().unwrap();
         let pane_count = self.panes.len();
+
+        log::debug!("screen reshape {row},{col}");
         match self.grid {
             Grid::HORIZONTALE => {
-                let new_rows = size_term.0.saturating_div(pane_count as u16);
-                let new_colls = size_term.1 - 2;
+                let new_rows = row.saturating_div(pane_count as u16) + 3;
+                let new_colls = col - 2;
+
+                log::debug!("screen reshape hor {new_rows},{new_colls}");
                 for term in &mut self.panes {
                     term.resize(new_rows, new_colls);
                 }
@@ -108,8 +112,9 @@ impl Tab {
             Grid::SQUIRE => {}
             Grid::GOLDER => {}
             Grid::VERTICAL => {
-                let new_rows = size_term.0 - 2;
-                let new_colls = size_term.1.saturating_div(pane_count as u16);
+                let new_rows = row - 2;
+                let new_colls = col.saturating_div(pane_count as u16) - 4;
+                log::debug!("screen reshape vor {new_rows},{new_colls}");
                 for term in &mut self.panes {
                     term.resize(new_rows, new_colls);
                 }
