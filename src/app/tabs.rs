@@ -54,7 +54,11 @@ impl Tab {
                     Grid::HORIZONTALE => {
                         let chunk_size = area.height.saturating_div(total_panes as u16);
 
-                        self.panes[0].render_pane(frame, Rect::new(area.x, area.y, area.width, chunk_size), self.active == 0);
+                        self.panes[0].render_pane(
+                            frame,
+                            Rect::new(area.x, area.y, area.width, chunk_size),
+                            self.active == 0,
+                        );
                         for i in 1..total_panes {
                             let next_area = Rect::new(
                                 area.x,
@@ -90,7 +94,6 @@ impl Tab {
         }
     }
 
-    //TODO match the new shape, resize the panes and place them on there new spot
     pub fn reshape(&mut self) {
         let size_term = size().unwrap();
         let pane_count = self.panes.len();
