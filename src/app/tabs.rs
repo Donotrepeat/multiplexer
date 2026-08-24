@@ -52,19 +52,25 @@ impl Tab {
                 // Two panes - split horizontally
                 match self.grid {
                     Grid::HORIZONTALE => {
-                        let chunk_size = area.height.saturating_div(total_panes as u16);
+                        let chunk_size = area.height / total_panes as u16;
+                        let remainder = area.height % total_panes as u16;
 
                         self.panes[0].render_pane(
                             frame,
-                            Rect::new(area.x, area.y, area.width, chunk_size),
+                            Rect::new(area.x, area.y, area.width, chunk_size + remainder),
                             self.active == 0,
                         );
                         for i in 1..total_panes {
+                            let pane_height = if i == total_panes - 1 {
+                                chunk_size - remainder
+                            } else {
+                                chunk_size
+                            };
                             let next_area = Rect::new(
                                 area.x,
                                 area.y + chunk_size * i as u16,
                                 area.width,
-                                chunk_size,
+                                pane_height,
                             );
 
                             self.panes[i].render_pane(frame, next_area, self.active == i);
