@@ -145,13 +145,13 @@ impl Pane {
         let new_offset = current.saturating_sub(lines);
         self.set_scroll_offset(new_offset);
     }
-    pub fn scroll_to_input(&mut self, num_panes: usize, active_id: usize) {
+    pub fn scroll_to_input(&mut self, _num_panes: usize, _active_id: usize) {
         let parser = self.vpty.lock().unwrap();
         let screen = parser.screen();
         let row = screen.cursor_position().0 as usize;
-        let a = screen.size().0 as usize;
+        let visible = self.visible_lines();
 
-        self.scroll_offset = row.saturating_sub(a);
+        self.scroll_offset = row.saturating_sub(visible);
     }
     // Scroll to top (offset = 0)
     pub fn scroll_to_top(&mut self) {

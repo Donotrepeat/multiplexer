@@ -107,22 +107,34 @@ impl Tab {
         log::debug!("screen reshape {row},{col}");
         match self.grid {
             Grid::HORIZONTALE => {
-                let new_rows = row.saturating_div(pane_count as u16) + 3;
-                let new_colls = col - 2;
+                let chunk_size = row.saturating_div(pane_count as u16);
+                let remainder = row % pane_count as u16;
 
-                log::debug!("screen reshape hor {new_rows},{new_colls}");
-                for term in &mut self.panes {
-                    term.resize(new_rows, new_colls);
+                for (i, term) in self.panes.iter_mut().enumerate() {
+                    let pane_height = if i == 0 {
+                        chunk_size + remainder
+                    } else if i == pane_count - 1 {
+                        chunk_size.saturating_sub(remainder)
+                    } else {
+                        chunk_size
+                    };
+                    log::debug!("screen reshape hor pane {i}: {pane_height},{col}");
+                    term.resize(pane_height, col);
                 }
             }
             Grid::SQUIRE => {}
             Grid::GOLDER => {}
             Grid::VERTICAL => {
-                let new_rows = row - 2;
-                let new_colls = col.saturating_div(pane_count as u16) - 4;
-                log::debug!("screen reshape vor {new_rows},{new_colls}");
-                for term in &mut self.panes {
-                    term.resize(new_rows, new_colls);
+                let chunk_size = col.saturating_div(pane_count as u16);
+
+                for (i, term) in self.panes.iter_mut().enumerate() {
+                    let pane_width = if i == pane_count - 1 {
+                        chunk_size
+                    } else {
+                        chunk_size
+                    };
+                    log::debug!("screen reshape vor pane {i}: {row},{pane_width}");
+                    term.resize(row, pane_width);
                 }
             }
         }

@@ -33,9 +33,8 @@ impl App {
             self.handle_events(timeout);
             if !self.home {
                 let num_panes = self.get_tab().panes.len();
-                for (idx, pane) in self.get_mut_tab().panes.iter_mut().enumerate() {
-                    pane.scroll_to_input(num_panes, idx);
-                }
+                let active = self.get_tab().active;
+                self.get_mut_tab().panes[active].scroll_to_input(num_panes, active);
             }
             terminal.draw(|frame| self.draw(frame))?;
         }
