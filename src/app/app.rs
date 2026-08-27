@@ -3,8 +3,7 @@ use crate::app::tabs::Tab;
 use anyhow::{Ok, Result};
 use crossterm::event::{KeyCode, KeyModifiers};
 use pane::Pane;
-use portable_pty::PtySize;
-use ratatui::{layout::Rect, DefaultTerminal, Frame};
+use ratatui::{DefaultTerminal, Frame};
 
 use crossterm::terminal::size;
 use std::io::Write;
@@ -32,9 +31,8 @@ impl App {
             };
             self.handle_events(timeout);
             if !self.home {
-                let num_panes = self.get_tab().panes.len();
                 let active = self.get_tab().active;
-                self.get_mut_tab().panes[active].scroll_to_input(num_panes, active);
+                self.get_mut_tab().panes[active].scroll_to_input();
             }
             terminal.draw(|frame| self.draw(frame))?;
         }
@@ -84,7 +82,6 @@ impl App {
                     {
                         let tab = self.get_mut_tab();
                         tab.grid = tab.grid.next();
-                        tab.reshape();
                     } else if key.code == KeyCode::Char('n')
                         && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
                     {
@@ -96,38 +93,17 @@ impl App {
                     } else if key.code == KeyCode::Char('t')
                         && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
                     {
-                        let pane_count = self.get_tab().panes.len();
-                        let size = self.get_tab().panes[self.get_tab().active]
-                            .pty_master
-                            .get_size()
-                            .unwrap();
-                        let new_rows = size.rows / (pane_count + 1) as u16 - 1;
-                        let new_cols = size.cols.saturating_sub(2) - 2;
-                        if new_cols < 2 {
-                            // Too narrow to split — ignore or flash a message
-                            return Ok(());
-                        }
+                        let (rows, cols) = {
+                            let tab = self.get_tab();
+                            let size = tab.panes[tab.active].pty_master.get_size().unwrap();
+                            (size.rows, size.cols)
+                        };
+                        let new_rows = (rows / (self.get_tab().panes.len() as u16 + 1)).max(2);
+                        let new_cols = cols.max(2);
                         let new_pane = Pane::new(new_rows, new_cols)?;
-                        self.get_tab().panes[self.get_tab().active]
-                            .pty_master
-                            .resize(PtySize {
-                                rows: new_rows,
-                                cols: new_cols,
-                                pixel_width: 0,
-                                pixel_height: 0,
-                            });
-                        self.get_tab().panes[self.get_tab().active]
-                            .vpty
-                            .lock()
-                            .unwrap()
-                            .screen_mut()
-                            .set_size(new_rows, new_cols);
-                        self.tabs
-                            .get_mut(self.active_tab)
-                            .unwrap()
-                            .panes
-                            .push(new_pane);
-                        self.get_mut_tab().active = self.get_tab().panes.len() - 1;
+                        let tab = self.get_mut_tab();
+                        tab.panes.push(new_pane);
+                        tab.active = tab.panes.len() - 1;
                     } else {
                         // Handle all key events for the active pane
                         let mut handled = false;
@@ -201,26 +177,6 @@ impl App {
                         }
                     }
                 }
-                crossterm::event::Event::Resize(cols, rows) => {
-                    self.get_tab().panes[self.get_tab().active]
-                        .pty_master
-                        .resize(PtySize {
-                            rows,
-                            cols,
-                            pixel_width: 0,
-                            pixel_height: 0,
-                        })?;
-                    self.get_tab().panes[self.get_tab().active]
-                        .vpty
-                        .lock()
-                        .unwrap()
-                        .screen_mut()
-                        .set_size(rows, cols);
-                    // Reset scroll position on resize to maintain relative position
-                    let active = self.get_tab().active;
-                    let scroll_offset = self.get_tab().panes[active].get_scroll_offset();
-                    self.get_mut_tab().panes[active].set_scroll_offset(scroll_offset);
-                }
                 _ => {}
             }
         }
@@ -233,7 +189,7 @@ impl App {
     fn get_mut_tab(&mut self) -> &mut Tab {
         self.tabs.get_mut(self.active_tab).unwrap()
     }
-    fn draw(&self, frame: &mut Frame) {
+    fn draw(&mut self, frame: &mut Frame) {
         self.tabs[self.active_tab].draw_tab(frame);
     }
 }

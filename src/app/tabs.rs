@@ -1,5 +1,4 @@
 use crate::app::pane::Pane;
-use crossterm::terminal::size;
 use ratatui::{layout::Rect, Frame};
 use strum::{EnumIter, IntoEnumIterator};
 
@@ -38,104 +37,57 @@ impl Tab {
         }
     }
 
-    pub fn draw_tab(&self, frame: &mut Frame) {
-        let total_panes = self.panes.len();
-        let area = frame.area();
-        match total_panes {
-            1 => {
-                // Single pane - fill entire screen (current behavior)
-                if let Some(pane) = self.panes.get(self.active) {
-                    pane.render_pane(frame, area, true);
-                }
-            }
-            2.. => {
-                // Two panes - split horizontally
-                match self.grid {
-                    Grid::HORIZONTALE => {
-                        let chunk_size = area.height / total_panes as u16;
-                        let remainder = area.height % total_panes as u16;
-
-                        self.panes[0].render_pane(
-                            frame,
-                            Rect::new(area.x, area.y, area.width, chunk_size + remainder),
-                            self.active == 0,
-                        );
-                        for i in 1..total_panes {
-                            let pane_height = if i == total_panes - 1 {
-                                chunk_size - remainder
-                            } else {
-                                chunk_size
-                            };
-                            let next_area = Rect::new(
-                                area.x,
-                                area.y + chunk_size * i as u16,
-                                area.width,
-                                pane_height,
-                            );
-
-                            self.panes[i].render_pane(frame, next_area, self.active == i);
-                        }
-                    }
-                    Grid::SQUIRE => {}
-                    Grid::GOLDER => {}
-                    Grid::VERTICAL => {
-                        let chunk_size = area.width.saturating_div(total_panes as u16);
-                        let top_area = Rect::new(area.x, area.y, chunk_size, area.height);
-
-                        self.panes[0].render_pane(frame, top_area, self.active == 0);
-                        for i in 1..total_panes {
-                            let next_area = Rect::new(
-                                area.x + chunk_size * i as u16,
-                                area.y,
-                                chunk_size,
-                                area.height,
-                            );
-
-                            self.panes[i].render_pane(frame, next_area, self.active == i);
-                        }
-                    }
-                }
-            }
-            _ => {}
+    // Tiles the area into `n` horizontal strips of equal height, distributing
+    // the leftover rows evenly to the top strips so the strips fill area with
+    // no overlap and no gap.
+    fn horizontal_rects(area: Rect, n: u16) -> Vec<Rect> {
+        let mut rects = Vec::with_capacity(n as usize);
+        let chunk = area.height / n;
+        let remainder = area.height % n;
+        let mut y = area.y;
+        for i in 0..n {
+            let height = chunk + u16::from(i < remainder);
+            rects.push(Rect::new(area.x, y, area.width, height));
+            y += height;
         }
+        rects
     }
 
-    pub fn reshape(&mut self) {
-        let (col, row) = size().unwrap();
-        let pane_count = self.panes.len();
+    // Tiles the area into `n` vertical strips of equal width, distributing the
+    // leftover columns evenly to the leftmost strips.
+    fn vertical_rects(area: Rect, n: u16) -> Vec<Rect> {
+        let mut rects = Vec::with_capacity(n as usize);
+        let chunk = area.width / n;
+        let remainder = area.width % n;
+        let mut x = area.x;
+        for i in 0..n {
+            let width = chunk + u16::from(i < remainder);
+            rects.push(Rect::new(x, area.y, width, area.height));
+            x += width;
+        }
+        rects
+    }
 
-        log::debug!("screen reshape {row},{col}");
-        match self.grid {
-            Grid::HORIZONTALE => {
-                let chunk_size = row.saturating_div(pane_count as u16);
-                let remainder = row % pane_count as u16;
-
-                for (i, term) in self.panes.iter_mut().enumerate() {
-                    let pane_height = if i == 0 {
-                        chunk_size + remainder
-                    } else if i == pane_count - 1 {
-                        chunk_size.saturating_sub(remainder)
-                    } else {
-                        chunk_size
-                    };
-                    log::debug!("screen reshape hor pane {i}: {pane_height},{col}");
-                    term.resize(pane_height, col);
-                }
-            }
-            Grid::SQUIRE => {}
-            Grid::GOLDER => {}
-            Grid::VERTICAL => {
-                let chunk_size = col.saturating_div(pane_count as u16);
-
-                for (i, term) in self.panes.iter_mut().enumerate() {
-                    let pane_width = if i == pane_count - 1 {
-                        chunk_size
-                    } else {
-                        chunk_size
-                    };
-                    log::debug!("screen reshape vor pane {i}: {row},{pane_width}");
-                    term.resize(row, pane_width);
-                }
+    pub fn draw_tab(&mut self, frame: &mut Frame) {
+        let total_panes = self.panes.len() as u16;
+        if total_panes == 0 {
+            return;
+        }
+        let area = frame.area();
+        let rects = match self.grid {
+            Grid::VERTICAL => Self::vertical_rects(area, total_panes),
+            _ => Self::horizontal_rects(area, total_panes),
+        };
+        // The single source of truth for pane sizing: every pane's virtual
+        // terminal is resized to its renderable rect (the block border takes
+        // one cell on each side) before it is drawn.
+        for (i, pane) in self.panes.iter_mut().enumerate() {
+            if let Some(&rect) = rects.get(i) {
+                pane.resize(
+                    rect.height.saturating_sub(2).max(1),
+                    rect.width.saturating_sub(2).max(1),
+                );
+                pane.render_pane(frame, rect, self.active == i);
             }
         }
     }

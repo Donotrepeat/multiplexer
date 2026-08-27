@@ -62,6 +62,9 @@ pub struct Pane {
     pub screen_changed: Arc<AtomicBool>,
     // Scroll position tracking
     pub scroll_offset: usize,
+    // Last size this pane's virtual terminal was set to
+    rows: u16,
+    cols: u16,
 }
 
 impl Pane {
@@ -114,6 +117,8 @@ impl Pane {
             pty_master: pair.master,
             screen_changed,
             scroll_offset: 0,
+            rows: row,
+            cols: coll,
         })
     }
 
@@ -145,7 +150,7 @@ impl Pane {
         let new_offset = current.saturating_sub(lines);
         self.set_scroll_offset(new_offset);
     }
-    pub fn scroll_to_input(&mut self, _num_panes: usize, _active_id: usize) {
+    pub fn scroll_to_input(&mut self) {
         let parser = self.vpty.lock().unwrap();
         let screen = parser.screen();
         let row = screen.cursor_position().0 as usize;
@@ -163,11 +168,9 @@ impl Pane {
         self.set_scroll_offset(1200);
     }
 
-    // Get number of visible lines (terminal height)
+    // Get number of visible lines (this pane's current virtual terminal height)
     pub fn visible_lines(&self) -> usize {
-        let parser = self.vpty.lock().unwrap();
-        let size = parser.screen().size();
-        size.0 as usize - 4
+        self.rows as usize
     }
 
     // Check if at top (offset = 0)
@@ -175,7 +178,17 @@ impl Pane {
         self.get_scroll_offset() == 0
     }
 
+    /// Resize the backing PTY and the vt100 screen so both stay in sync.
+    /// Skips the work (and avoids a spurious SIGWINCH on the shell) when the
+    /// requested size is unchanged.
     pub fn resize(&mut self, rows: u16, cols: u16) {
+        let rows = rows.max(1);
+        let cols = cols.max(1);
+        if rows == self.rows && cols == self.cols {
+            return;
+        }
+        self.rows = rows;
+        self.cols = cols;
         self.pty_master
             .resize(PtySize {
                 rows,
@@ -184,6 +197,11 @@ impl Pane {
                 pixel_height: 0,
             })
             .unwrap();
+        self.vpty
+            .lock()
+            .unwrap()
+            .screen_mut()
+            .set_size(rows, cols);
     }
 
     // Check if at bottom
@@ -193,20 +211,24 @@ impl Pane {
     pub fn render_pane(&self, frame: &mut Frame, area: Rect, is_active: bool) {
         let parser = self.vpty.lock().unwrap();
         let screen = parser.screen();
-        let (visible_rows, _cols) = screen.size();
-        let text = vterm_to_ratatui(screen, self.scroll_offset, visible_rows as usize);
+        let (screen_rows, _cols) = screen.size();
+        let inner = area.inner(Margin {
+            horizontal: 1,
+            vertical: 1,
+        });
+        let rows = (screen_rows as usize).min(inner.height as usize);
+        let text = vterm_to_ratatui(screen, rows);
         frame.render_widget(Paragraph::new(text).block(Block::bordered()), area);
 
         if is_active {
             let (row, col) = screen.cursor_position();
-            let inner = area.inner(Margin {
-                horizontal: 1,
-                vertical: 1,
-            });
             if row as usize >= self.scroll_offset {
-                let x = (inner.x + col).min(inner.right() - 1);
-                let y = (inner.y + row - self.scroll_offset as u16).min(inner.bottom() - 1);
-                frame.set_cursor_position(Position::new(x, y));
+                let view_row = (row as usize - self.scroll_offset) as u16;
+                if view_row < inner.height {
+                    let x = (inner.x + col).min(inner.right().saturating_sub(1));
+                    let y = inner.y + view_row;
+                    frame.set_cursor_position(Position::new(x, y));
+                }
             }
         }
     }
@@ -250,11 +272,7 @@ fn build_style(cell: &vt100::Cell) -> Style {
     style
 }
 
-fn vterm_to_ratatui(
-    screen: &vt100::Screen,
-    scroll_offset: usize,
-    visible_rows: usize,
-) -> Text<'static> {
+fn vterm_to_ratatui(screen: &vt100::Screen, visible_rows: usize) -> Text<'static> {
     let size = screen.size();
     let (_rows, cols) = size;
     let mut lines = Vec::with_capacity(visible_rows);
