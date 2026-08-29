@@ -37,9 +37,6 @@ impl Tab {
         }
     }
 
-    // Tiles the area into `n` horizontal strips of equal height, distributing
-    // the leftover rows evenly to the top strips so the strips fill area with
-    // no overlap and no gap.
     fn horizontal_rects(area: Rect, n: u16) -> Vec<Rect> {
         let mut rects = Vec::with_capacity(n as usize);
         let chunk = area.height / n;
@@ -52,9 +49,42 @@ impl Tab {
         }
         rects
     }
+    // 2 -> two rows 1 terminal eacy row
+    // 3 -> two rows 1-2 terminal on row
+    // 4 -> two rows 2 terminal on a row
+    // 5 -> two rows 2-3 terminals on a row
+    // 9 -> 3 rows 3 terminals
 
-    // Tiles the area into `n` vertical strips of equal width, distributing the
-    // leftover columns evenly to the leftmost strips.
+    fn grid_rects(area: Rect, n: u16) -> Vec<Rect> {
+        if n == 0 {
+            return Vec::new();
+        }
+        let mut rects = Vec::with_capacity(n as usize);
+        let mut columns = (n as f64).sqrt().ceil().max(1.0) as u16;
+        let mut rows = n.div_ceil(columns);
+        if rows < 2 {
+            rows = 2;
+        }
+        columns = n.div_ceil(rows);
+        let row_height = area.height / rows;
+        let row_remainder = area.height % rows;
+        let mut y = area.y;
+        for row in 0..rows {
+            let cells = columns.min(n - row * columns);
+            let row_height = row_height + u16::from(row < row_remainder);
+            let cell_width = area.width / cells;
+            let cell_remainder = area.width % cells;
+            let mut x = area.x;
+            for c in 0..cells {
+                let width = cell_width + u16::from(c < cell_remainder);
+                rects.push(Rect::new(x, y, width, row_height));
+                x += width;
+            }
+            y += row_height;
+        }
+        rects
+    }
+
     fn vertical_rects(area: Rect, n: u16) -> Vec<Rect> {
         let mut rects = Vec::with_capacity(n as usize);
         let chunk = area.width / n;
@@ -76,6 +106,7 @@ impl Tab {
         let area = frame.area();
         let rects = match self.grid {
             Grid::VERTICAL => Self::vertical_rects(area, total_panes),
+            Grid::SQUIRE => Self::grid_rects(area, total_panes),
             _ => Self::horizontal_rects(area, total_panes),
         };
         // The single source of truth for pane sizing: every pane's virtual
