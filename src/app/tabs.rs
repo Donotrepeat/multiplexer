@@ -98,6 +98,32 @@ impl Tab {
         rects
     }
 
+    fn golden_rects(area: Rect, n: u16) -> Vec<Rect> {
+        let phi = 0.618;
+        let mut regions: Vec<(u16, u16, u16, u16)> = Vec::with_capacity(n as usize);
+        regions.push((area.x, area.y, area.width, area.height));
+        let mut axis_h = false;
+        for _k in 1..n {
+            let (x, y, w, h) = regions[_k as usize - 1];
+            if axis_h {
+                let kept_h = ((h as f64) * phi).round() as u16;
+                let kept_h = kept_h.max(1).min(h.saturating_sub(1));
+                regions[_k as usize - 1] = (x, y, w, kept_h);
+                regions.push((x, y + kept_h, w, h - kept_h));
+            } else {
+                let kept_w = ((w as f64) * phi).round() as u16;
+                let kept_w = kept_w.max(1).min(w.saturating_sub(1));
+                regions[_k as usize - 1] = (x, y, kept_w, h);
+                regions.push((x + kept_w, y, w - kept_w, h));
+            }
+            axis_h = !axis_h;
+        }
+        regions
+            .iter()
+            .map(|&(x, y, w, h)| Rect::new(x, y, w, h))
+            .collect()
+    }
+
     pub fn draw_tab(&mut self, frame: &mut Frame) {
         let total_panes = self.panes.len() as u16;
         if total_panes == 0 {
@@ -107,6 +133,7 @@ impl Tab {
         let rects = match self.grid {
             Grid::VERTICAL => Self::vertical_rects(area, total_panes),
             Grid::SQUIRE => Self::grid_rects(area, total_panes),
+            Grid::GOLDER => Self::golden_rects(area, total_panes),
             _ => Self::horizontal_rects(area, total_panes),
         };
         // The single source of truth for pane sizing: every pane's virtual
