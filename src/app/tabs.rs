@@ -49,12 +49,6 @@ impl Tab {
         }
         rects
     }
-    // 2 -> two rows 1 terminal eacy row
-    // 3 -> two rows 1-2 terminal on row
-    // 4 -> two rows 2 terminal on a row
-    // 5 -> two rows 2-3 terminals on a row
-    // 9 -> 3 rows 3 terminals
-
     fn grid_rects(area: Rect, n: u16) -> Vec<Rect> {
         if n == 0 {
             return Vec::new();
@@ -148,5 +142,16 @@ impl Tab {
                 pane.render_pane(frame, rect, self.active == i);
             }
         }
+    }
+
+    pub fn del_pane(&mut self) {
+        let new_active = if self.active == self.panes.len() - 1 {
+            self.active - 1
+        } else {
+            self.active
+        };
+
+        self.panes.remove(self.active);
+        self.active = new_active;
     }
 }

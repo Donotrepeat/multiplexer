@@ -82,6 +82,11 @@ impl App {
                     {
                         let tab = self.get_mut_tab();
                         tab.grid = tab.grid.next();
+                    } else if key.code == KeyCode::Char('r')
+                        && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
+                    {
+                        let tab = self.get_mut_tab();
+                        tab.del_pane();
                     } else if key.code == KeyCode::Char('n')
                         && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
                     {
