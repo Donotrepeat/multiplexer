@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use ratatui::prelude::Position;
+use ratatui::style::Stylize;
 use ratatui::{
     layout::{Margin, Rect},
     style::{Color, Modifier, Style},
@@ -65,6 +66,7 @@ pub struct Pane {
     // Last size this pane's virtual terminal was set to
     rows: u16,
     cols: u16,
+    pub title: String,
 }
 
 impl Pane {
@@ -119,6 +121,7 @@ impl Pane {
             scroll_offset: 0,
             rows: row,
             cols: coll,
+            title: "~".to_string(),
         })
     }
 
@@ -197,11 +200,7 @@ impl Pane {
                 pixel_height: 0,
             })
             .unwrap();
-        self.vpty
-            .lock()
-            .unwrap()
-            .screen_mut()
-            .set_size(rows, cols);
+        self.vpty.lock().unwrap().screen_mut().set_size(rows, cols);
     }
 
     // Check if at bottom
@@ -218,7 +217,11 @@ impl Pane {
         });
         let rows = (screen_rows as usize).min(inner.height as usize);
         let text = vterm_to_ratatui(screen, rows);
-        frame.render_widget(Paragraph::new(text).block(Block::bordered()), area);
+        frame.render_widget(
+            Paragraph::new(text)
+                .block(Block::bordered().title(self.title.clone().bold().fg(Color::Cyan))),
+            area,
+        );
 
         if is_active {
             let (row, col) = screen.cursor_position();
