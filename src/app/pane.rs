@@ -15,9 +15,25 @@ use ratatui::{
 };
 pub struct MuxCallbacks {
     writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
+    title: Arc<Mutex<Option<String>>>,
+    title_changed: Arc<AtomicBool>,
 }
 
 impl vt100::Callbacks for MuxCallbacks {
+    fn set_window_title(&mut self, _screen: &mut vt100::Screen, title: &[u8]) {
+        if let Ok(s) = std::str::from_utf8(title) {
+            *self.title.lock().unwrap() = Some(s.to_string());
+            self.title_changed.store(true, Ordering::Relaxed);
+        }
+    }
+
+    fn set_window_icon_name(&mut self, _screen: &mut vt100::Screen, icon_name: &[u8]) {
+        // treat OSC 1 the same as OSC 2 if you want icon-name-only tools to count
+        if let Ok(s) = std::str::from_utf8(icon_name) {
+            *self.title.lock().unwrap() = Some(s.to_string());
+            self.title_changed.store(true, Ordering::Relaxed);
+        }
+    }
     fn unhandled_csi(
         &mut self,
         screen: &mut vt100::Screen,
@@ -67,6 +83,8 @@ pub struct Pane {
     rows: u16,
     cols: u16,
     pub title: String,
+    title_shared: Arc<Mutex<Option<String>>>,
+    title_changed: Arc<AtomicBool>,
 }
 
 impl Pane {
@@ -85,13 +103,16 @@ impl Pane {
         let _child = pair.slave.spawn_command(cmd)?;
         drop(pair.slave);
         let pty_writer = Arc::new(Mutex::new(Some(pair.master.take_writer()?)));
+        let title_shared = Arc::new(Mutex::new(None));
+        let title_changed = Arc::new(AtomicBool::new(false));
+
+        let callbacks = MuxCallbacks {
+            writer: pty_writer.clone(),
+            title: title_shared.clone(),
+            title_changed: title_changed.clone(),
+        };
         let vpty = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
-            row,
-            coll,
-            1200,
-            MuxCallbacks {
-                writer: Arc::clone(&pty_writer),
-            },
+            row, coll, 1200, callbacks,
         )));
         let vpt_clone = Arc::clone(&vpty);
 
@@ -122,9 +143,19 @@ impl Pane {
             rows: row,
             cols: coll,
             title: "~".to_string(),
+            title_shared,
+            title_changed,
         })
     }
-
+    pub fn sync_title(&mut self) -> bool {
+        if self.title_changed.swap(false, Ordering::Relaxed) {
+            if let Some(t) = self.title_shared.lock().unwrap().clone() {
+                self.title = t;
+                return true; // title actually changed, redraw tab bar etc.
+            }
+        }
+        false
+    }
     // Set scroll position using vt100 parser
     pub fn set_scroll_offset(&mut self, offset: usize) {
         let mut parser = self.vpty.lock().unwrap();

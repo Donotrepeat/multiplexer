@@ -139,6 +139,7 @@ impl Tab {
                     rect.height.saturating_sub(2).max(1),
                     rect.width.saturating_sub(2).max(1),
                 );
+                pane.sync_title();
                 pane.render_pane(frame, rect, self.active == i);
             }
         }
