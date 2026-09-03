@@ -10,10 +10,15 @@ use app::pane::Pane;
 
 use crate::app::tabs;
 
+fn set_terminal_title(title: &str) {
+    print!("\x1B]0;{}\x07", title);
+}
+
 fn main() -> Result<()> {
     logging::init(LevelFilter::Trace)
         .map_err(|e| anyhow::anyhow!("failed to init logger: {e:?}"))?;
     enable_raw_mode()?;
+    set_terminal_title("multiplexer");
 
     let (term_cols, term_rows) = size()?;
     let term_rows = term_rows.max(1);
