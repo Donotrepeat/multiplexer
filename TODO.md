@@ -8,36 +8,10 @@ Each item lists: what's wrong → why it's a problem → where → suggested fix
 
 ## Build & tooling defects (hard problems — fix first)
 
-### 1. [BUILD] Test suite does not compile
-- **Where:** `src/app/pane.rs:366`
-- **What:** `MuxCallbacks { writer, … }` in `test_parser()` fails to initialise the new `title` and `title_changed` fields that were added to the struct.
-- **Why it's wrong:** The feature commits ("pane title implementation") changed the `MuxCallbacks` struct but never updated the tests. `cargo test --no-run` fails with `error[E0063]: missing fields`. A red test build means:
-  - The 9 existing tests can't run, so regressions in the ANSI-query-reply logic can't be caught.
-  - It breaks any CI or "test before commit" workflow.
-  - It signals the tests are drifting from the code — the canary for test/maintenance debt.
-- **Fix:** Add `title: Arc::new(Mutex::new(None))` and `title_changed: Arc::new(AtomicBool::new(false))` to the test initializer, then run `cargo test`.
-
-### 2. [HYGIENE] 242 MB `perf.data` and `flamegraph.svg` sitting in the repo tree
-- **Where:** repository root
-- **What:** A leftover `perf.data` (242 MB — a `perf` profiling capture) and `flamegraph.svg` are untracked; `.gitignore` only contains `/target`.
-- **Why it's wrong:** If ever staged, 242 MB of binary profiling data lands in history forever. It's noise, bloats clones, and belongs nowhere near source control. `.gitignore` should be explicit about it.
-- **Fix:** Delete `perf.data` (and `flamegraph.svg` if not wanted) and add entries to `.gitignore` (e.g. `/perf.data`, `/*.svg` if ephemeral), or move them outside the repo.
-
----
-
 ## Clippy / compiler warnings (tooling-enforced)
 
 > These are auto-detected and cheap to fix. Not smells, but they should be zeroed out: `cargo clippy` currently emits 14 warnings.
 
-### 3. [WARN] Unused import
-- **Where:** `src/main.rs:9` — `use app::pane::Pane;`
-- **Why wrong:** Dead import; `Pane` isn't referenced in `main()`. Misleads readers into thinking `main` constructs panes.
-- **Fix:** Remove the import.
-
-### 4. [WARN] Unused `Result` from `handle_events`
-- **Where:** `src/app/app.rs:32` — `self.handle_events(timeout);`
-- **Why wrong:** `handle_events` returns `Result` and internally does `?` on writes; ignoring it silently swallows I/O errors from forwarded keystrokes.
-- **Fix:** `let _ = self.handle_events(timeout);` or, better, propagate/handle the error.
 
 ### 5. [WARN] Collapsible `if` blocks
 - **Where:** `src/app/app.rs:144-148` and `:153`, `src/app/pane.rs:67`, `:151`

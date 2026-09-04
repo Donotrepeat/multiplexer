@@ -3,15 +3,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
-use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use ratatui::prelude::Position;
 use ratatui::style::Stylize;
 use ratatui::{
+    Frame,
     layout::{Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Paragraph},
-    Frame,
 };
 pub struct MuxCallbacks {
     writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
@@ -64,10 +64,10 @@ impl vt100::Callbacks for MuxCallbacks {
             }
             _ => None,
         };
-        if let Some(bytes) = reply {
-            if let Some(w) = self.writer.lock().unwrap().as_mut() {
-                let _ = w.write_all(&bytes);
-            }
+        if let Some(bytes) = reply
+            && let Some(w) = self.writer.lock().unwrap().as_mut()
+        {
+            let _ = w.write_all(&bytes);
         }
     }
 }
@@ -135,7 +135,7 @@ impl Pane {
         });
 
         Ok(Pane {
-            vpty: vpty,
+            vpty,
             pty_writer,
             pty_master: pair.master,
             screen_changed,
@@ -148,12 +148,13 @@ impl Pane {
         })
     }
     pub fn sync_title(&mut self) -> bool {
-        if self.title_changed.swap(false, Ordering::Relaxed) {
-            if let Some(t) = self.title_shared.lock().unwrap().clone() {
-                self.title = t;
-                return true; // title actually changed, redraw tab bar etc.
-            }
+        if self.title_changed.swap(false, Ordering::Relaxed)
+            && let Some(t) = self.title_shared.lock().unwrap().clone()
+        {
+            self.title = t;
+            return true; // title actually changed, redraw tab bar etc.
         }
+
         false
     }
     // Set scroll position using vt100 parser
@@ -205,11 +206,6 @@ impl Pane {
     // Get number of visible lines (this pane's current virtual terminal height)
     pub fn visible_lines(&self) -> usize {
         self.rows as usize
-    }
-
-    // Check if at top (offset = 0)
-    pub fn at_top(&self) -> bool {
-        self.get_scroll_offset() == 0
     }
 
     /// Resize the backing PTY and the vt100 screen so both stay in sync.
@@ -359,12 +355,17 @@ mod tests {
         let bytes = Arc::new(Mutex::new(Vec::new()));
         let writer: Box<dyn Write + Send> = Box::new(TestWriter(Arc::clone(&bytes)));
         let writer = Arc::new(Mutex::new(Some(writer)));
+        let title_shared = Arc::new(Mutex::new(None));
+        let title_changed = Arc::new(AtomicBool::new(false));
+
         let parser = vt100::Parser::new_with_callbacks(
             24,
             80,
             1200,
             MuxCallbacks {
                 writer: Arc::clone(&writer),
+                title_changed,
+                title: title_shared,
             },
         );
         (parser, bytes)

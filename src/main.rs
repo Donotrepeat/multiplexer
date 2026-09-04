@@ -6,7 +6,6 @@ mod app;
 mod logging;
 
 use app::app::App;
-use app::pane::Pane;
 
 use crate::app::tabs;
 
