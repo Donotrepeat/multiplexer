@@ -1,10 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-/// A high-level intent derived from a key event.
-///
-/// `App` translates raw key events into `Command`s via [`resolve`] and then
-/// executes them, so the set of things a keypress can do is enumerated here
-/// in one place instead of being spread across an `if`/`else if` cascade.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     Quit,
