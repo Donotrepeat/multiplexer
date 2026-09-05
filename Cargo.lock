@@ -685,7 +685,6 @@ dependencies = [
  "ratatui",
  "strum",
  "vt100",
- "vte",
 ]
 
 [[package]]

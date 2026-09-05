@@ -5,7 +5,7 @@ use log::LevelFilter;
 mod app;
 mod logging;
 
-use app::app::App;
+use app::application::App;
 
 use crate::app::tabs;
 
