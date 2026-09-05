@@ -1,5 +1,5 @@
 use crate::app::pane::Pane;
-use ratatui::{layout::Rect, Frame};
+use ratatui::{Frame, layout::Rect};
 use strum::{EnumIter, IntoEnumIterator};
 
 #[derive(EnumIter)]

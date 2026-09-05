@@ -72,8 +72,13 @@ pub fn dump() {
 mod tests {
     use super::*;
 
+    /// The logger is global state (entries buffer + max level), so tests that
+    /// touch it must not run in parallel.
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
     #[test]
     fn buffered_logger_captures_level_and_message() {
+        let _guard = TEST_LOCK.lock().unwrap();
         reset(LevelFilter::Debug).unwrap();
         log::debug!("scroll offset {}", 42);
         let entries = logger().entries.lock().unwrap();
@@ -84,6 +89,7 @@ mod tests {
 
     #[test]
     fn logger_filters_below_max_level() {
+        let _guard = TEST_LOCK.lock().unwrap();
         reset(LevelFilter::Info).unwrap();
         log::debug!("hidden");
         log::info!("shown");

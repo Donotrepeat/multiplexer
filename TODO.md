@@ -4,16 +4,16 @@ Credits: Standards axis derived from the Fowler smell baseline; tooling differen
 
 Each item lists: what's wrong → why it's a problem → where → suggested fix. Findings are ranked roughly by priority.
 
-**Tooling state (re-verified 2026-09-05):** `cargo test` — 9/9 green. `cargo clippy --all-targets` — **6 warnings**: `module_inception` (#12), `collapsible_if` (#13), and four `upper_case_acronyms` on the `Grid` variants (cleared by the rename in #16).
+**Tooling state (re-verified 2026-09-05):** `cargo test` — 14/14 green. `cargo clippy --all-targets` — **4 warnings**: the `upper_case_acronyms` on the `Grid` variants (cleared by the rename in #16).
 
-**History:** former #1–#4 and #6–#8 were verified fixed and pruned. Former #5 is partially fixed — one collapsible `if` remains (#13). Former #9–#18 live on as #12, #14–#22. New in this revision: correctness bugs #1–#7 and tooling/hygiene findings #8–#11.
+**History:** original-review items #1–#8 were fixed and pruned in the first cleanup. Second-review items #8 (unused `vte`, dead `src/lib.rs`), #12 (`app::app` → `application`), #13 (collapsible `if`) and #14 (giant dispatch → `command` module) were fixed and pruned since; remaining items keep their second-review numbers.
 
 ---
 
 ## Correctness bugs (hard problems — fix first)
 
 ### 1. [BUG] Scroll direction is inverted
-- **Where:** `src/app/pane.rs:197-199` (`scroll_to_top`), `:202-204` (`scroll_to_bottom`), `:234-236` (`at_bottom`); wired to Home/End at `src/app/app.rs:116-128`
+- **Where:** `src/app/pane.rs:197-199` (`scroll_to_top`), `:202-204` (`scroll_to_bottom`), `:234-236` (`at_bottom`); wired to Home/End via `SCROLL_BINDINGS` (`src/app/command.rs:39-44`) and the `ScrollToTop`/`ScrollToBottom` arms (`src/app/application.rs:108-115`)
 - **What:** vt100's scrollback offset counts from the *bottom*: `set_scrollback(0)` shows the live screen, and larger values reach further back into history (vt100 0.16.2 `Screen::set_scrollback` docs). The code assumes the opposite: `scroll_to_top()` sets offset `0` — jumping to the **bottom** (live view) — while `scroll_to_bottom()` sets `1200`, jumping to the **top** (deepest history). `at_bottom()` (`offset >= 1200`) is therefore true exactly when the view is at the *top*.
 - **Why it's a problem:** Home and End do the opposite of their names, and `at_bottom()` feeds the `App.home` flag (#22), so follow-cursor mode is armed by the wrong key.
 - **Fix:** Swap the semantics (`scroll_to_top` → max scrollback, `scroll_to_bottom` → `0`), or better: derive both from the parser's clamped scrollback instead of the hardcoded `1200` (see #2 and #19).
@@ -21,24 +21,24 @@ Each item lists: what's wrong → why it's a problem → where → suggested fix
 ### 2. [BUG] `at_bottom()` can never be true while history is short
 - **Where:** `src/app/pane.rs:234-236`
 - **What:** `at_bottom()` tests `get_scroll_offset() >= 1200`, but vt100 *clamps* the scrollback offset to the actual scrollback size. Until 1200 lines of history exist, `scrollback()` returns less than 1200, so `at_bottom()` stays `false` even with the live screen in view.
-- **Why it's a problem:** After pressing End on a fresh shell, `App.home` never flips back to "at input", so `run()` (`app.rs:33-36`) calls `scroll_to_input()` every frame — the user is pinned out of the bottom view.
+- **Why it's a problem:** After pressing End on a fresh shell, `App.home` never flips back to "at input", so `run()` (`application.rs:33-36`) calls `scroll_to_input()` every frame — the user is pinned out of the bottom view.
 - **Fix:** Test the real boundary (once #1 fixes the direction, live view ⇔ `scrollback() == 0`), not a magic number.
 
 ### 3. [BUG] Ctrl+letter encoding can panic (byte underflow)
-- **Where:** `src/app/app.rs:161-165`
+- **Where:** `src/app/application.rs:147-149` (`send_key`)
 - **What:** `w.write_all(&[c as u8 - b'a' + 1])` assumes `c` is a lowercase `a..=z`. For uppercase (e.g. Ctrl+Shift+key, which some terminals report as `Char('C')`) or non-letters, `c as u8 - b'a'` underflows: panic in debug builds, garbage byte in release.
 - **Why it's a problem:** A reachable panic from ordinary keyboard input; also silently wrong for the other control ranges (Ctrl+@, Ctrl+[, Ctrl+], Ctrl+_, …).
 - **Fix:** Guard `matches!(c, 'a'..='z' | 'A'..='Z')` (lowercasing first) and handle the remaining control ranges explicitly — or use a key-to-bytes helper that already knows the mapping (this belongs in `Pane`, see #15).
 
 ### 4. [BUG] New tab activates the wrong tab
-- **Where:** `src/app/app.rs:56-58`
+- **Where:** `src/app/application.rs:55-63` (`Command::NewTab` arm)
 - **What:** Alt+C pushes the new tab at the *end* of `self.tabs` but activates it with `self.active_tab += 1`. With tabs [A,B,C] and A active, this lands on B, not the new tab D.
 - **Why it's a problem:** The tab is created but not shown — the keybinding looks broken.
 - **Fix:** `self.active_tab = self.tabs.len() - 1;` after the push.
 
 ### 5. [BUG] Deleting the last pane panics
-- **Where:** `src/app/tabs.rs:148-157` (`del_pane`), consumed by `src/app/app.rs:34-35` and `:92`
-- **What:** With one pane left, `del_pane` computes `self.active - 1` with `active == 0` → usize underflow (debug panic). Even past that, it empties `panes`, and the next loop iteration hits `panes[active]` (`app.rs:35`) and `panes.len() - 1` (`app.rs:92`) on an empty vec.
+- **Where:** `src/app/tabs.rs:148-157` (`del_pane`), consumed by `src/app/application.rs:34-35` and `:89`
+- **What:** With one pane left, `del_pane` computes `self.active - 1` with `active == 0` → usize underflow (debug panic). Even past that, it empties `panes`, and the next loop iteration hits `panes[active]` (`application.rs:35`) and `panes.len() - 1` (`application.rs:89`) on an empty vec.
 - **Why it's a problem:** Alt+R on a single-pane tab is an ordinary user action that crashes the app.
 - **Fix:** Guard in `del_pane` (`len() <= 1` → refuse, or close the tab). Closing the tab then needs App-level handling for the last remaining tab.
 
@@ -49,7 +49,7 @@ Each item lists: what's wrong → why it's a problem → where → suggested fix
 - **Fix:** One source of truth: make the parser's scrollback the only scroll state, route all writes through a single method, and compute cursor position in the same coordinate system as `screen.cell()`.
 
 ### 7. [BUG] Alt+unhandled keys type a bare letter into the shell
-- **Where:** `src/app/app.rs:166` — the fall-through `KeyCode::Char(c) => w.write_all(c.to_string().as_bytes())`
+- **Where:** `src/app/application.rs:150` — the fall-through `KeyCode::Char(c) => w.write_all(c.to_string().as_bytes())` in `send_key`
 - **What:** Alt combos not claimed by the multiplexer (anything but w/c/e/q/j/r/n/t) fall into normal input handling, which sends the character without the `ESC` prefix. Alt+X becomes a literal `x` in the child shell.
 - **Why it's a problem:** Contradicts PLAN.md §7 ("Alt+key → prefix with ESC"): programs with Alt bindings never see them, and stray letters appear at the prompt.
 - **Fix:** In the fall-through arm, if `key.modifiers.contains(KeyModifiers::ALT)`, write `b"\x1b"` before the char bytes — or deliberately swallow unhandled Alt combos. Pick one, on purpose.
@@ -60,7 +60,7 @@ Each item lists: what's wrong → why it's a problem → where → suggested fix
 
 
 ### 9. [HYGIENE] Panic hygiene: unwraps on fallible I/O + no terminal-restoring panic hook
-- **Where:** `src/app/tabs.rs:34` (`Pane::new(..).unwrap()`), `src/app/pane.rs:229` (`resize(..).unwrap()`), `src/app/app.rs:102` (`get_size().unwrap()`), and `lock().unwrap()` throughout (`app.rs:149`, `pane.rs:129`, `:162`, `:170`, `:238`)
+- **Where:** `src/app/tabs.rs:34` (`Pane::new(..).unwrap()`), `src/app/pane.rs:229` (`resize(..).unwrap()`), `src/app/application.rs:98` (`get_size().unwrap()`), and `lock().unwrap()` throughout (`application.rs:135`, `pane.rs:129`, `:162`, `:170`, `:238`)
 - **What:** `Tab::new` can't propagate `Pane::new`'s error, so it unwraps. A panic in the reader thread while holding the vpty mutex poisons it → the next `lock().unwrap()` in `render_pane` takes down the main thread too. No panic hook restores the terminal, so any crash leaves raw mode on and the user's shell unusable.
 - **Why it's a problem:** One dropped PTY or panicking thread crashes the whole app *and* trashes the user's terminal state.
 - **Fix:** Make `Tab::new` return `Result`; replace unwraps with `?`/logged failures; install a panic hook that restores the terminal (`disable_raw_mode` + leave alternate screen) before exiting.
@@ -81,32 +81,15 @@ Each item lists: what's wrong → why it's a problem → where → suggested fix
 
 ## Clippy / compiler warnings (tooling-enforced)
 
-> 6 remaining. Auto-detected and cheap to fix; should be zeroed out.
-### 13. [WARN] Collapsible `if` in `handle_events`
-- **Where:** `src/app/app.rs:43-44`
-- **Why wrong:** `if poll(..)? { if let Event::Key(key) = read()? { … } }` can fold into one guard chain: `if poll(..)? && let Event::Key(key) = read()?` (let-chains are already used elsewhere in this codebase).
-- **Fix:** Collapse it. (Remnant of the old #5 — the other collapsible ifs were fixed.)
-
-> The four `upper_case_acronyms` warnings on the `Grid` variants are cleared by the rename in #16.
+> 4 remaining — the `upper_case_acronyms` warnings on the `Grid` variants, cleared by the rename in #16.
 
 ---
 
 ## Smell findings (Fowler baseline — judgement calls)
 
-### 14. [SMELL] Repeated Switches — `handle_events` is one giant dispatch
-- **Where:** `src/app/app.rs:42-180`
-- **What:** A ~140-line `if`/`else if` cascade. Eight arms repeat the identical guard — `key.code == KeyCode::Char('X') && key.modifiers.contains(KeyModifiers::ALT)` (`:45-99`) — then a *second* nested cascade for scroll keys (`:116-143`), then a *third* `match` that maps `KeyCode` to raw escape-sequence bytes (`:151-168`).
-- **Why it's a problem:**
-  - **Rigidity:** Adding one new hotkey means writing another near-copy of the same guard; the failure mode is copy-paste bugs (see #4 for one that already slipped through).
-  - **Mysterious control flow:** Reading it is a scan for which arm fires and in what order — the borrow juggling (repeated `self.get_tab()` / `self.get_mut_tab()` with sentinel `active` copies) exists *because* the cascade holds `self` across many paths.
-  - **Divergent reasons to change:** quitting, tab ops, layout cycling, pane deletion, scrolling and character-input all live in the same method.
-- **Fix:**
-  - Dispatch on `(key.code, key.modifiers)` via a `match` or a keybinding table mapping `(KeyCode, KeyModifiers) -> Command`.
-  - Give `Pane` a `send_key`/`scroll` interface so `App` orchestrates commands rather than performing low-level byte writes (see #15).
-
 ### 15. [SMELL] Feature Envy — `App` reaches into `Pane`'s writer to send bytes
-- **Where:** `src/app/app.rs:148-169`
-- **What:** `App::handle_events` locks `active_pane.pty_writer`, then hand-maps every `KeyCode` to escape bytes (`Enter -> b"\r"`, `Up -> b"\x1b[A"`, `Ctrl+c -> c as u8 - b'a' + 1`, …).
+- **Where:** `src/app/application.rs:132-155` (`send_key`)
+- **What:** `App::send_key` locks `active_pane.pty_writer`, then hand-maps every `KeyCode` to escape bytes (`Enter -> b"\r"`, `Up -> b"\x1b[A"`, `Ctrl+c -> c as u8 - b'a' + 1`, …).
 - **Why it's a problem:**
   - **Wrong home:** the `KeyCode`→bytes knowledge is intrinsic to a *pane/terminal*, not to the app shell that routes keys. `Pane` owns the writer; `Pane` should be the only thing that knows how to translate keys into bytes for its PTY.
   - **Encapsulation leak:** `App` depends on the mutable internals of `Pane` (`pty_writer` is `pub`), coupling the two modules and duplicating terminal-protocol knowledge where a second consumer would have to re-derive it.
@@ -152,7 +135,7 @@ Each item lists: what's wrong → why it's a problem → where → suggested fix
 - **Fix:** Rename to something accurate, e.g. `scroll_cursor_to_top` / `align_cursor_to_viewport_top`, and route through `set_scroll_offset` (or whatever single write path #6 establishes).
 
 ### 22. [SMELL] Speculative Generality — `App.home` flag
-- **Where:** `src/app/app.rs:16`, set in `main.rs:30`, toggled in `app.rs:121/128/136/143`, read only in `run()` (`:33`)
+- **Where:** `src/app/application.rs:16`, set in `main.rs:30`, toggled in `application.rs:110/114/120/125`, read only in `run()` (`:34`)
 - **What:** `home: bool` is initialised in `main`, flipped by several scroll-key branches, and consumed in exactly one place to decide whether to call `scroll_to_input`.
 - **Why it's a problem:** The flag's meaning is implicit and only coherent if every write site stays consistent; it's scattered across the event handler as a side effect. Its value (a scroll-mode toggle) is really a property of the Pane's scroll state, not of the whole App. It smells like generality the caller doesn't need — a second consumer would immediately need the invariant documented. Bugs #1/#2 currently make every write site semantically wrong anyway.
 - **Fix:** Fold the "is scrolled home / at input" state into Pane's scroll model (it already knows offset vs cursor — see #6), or compute the needed behaviour from scratch each `run()` iteration instead of carrying a bool.
