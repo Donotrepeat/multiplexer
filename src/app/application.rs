@@ -31,6 +31,9 @@ impl App {
                 std::time::Duration::from_millis(16)
             };
             self.handle_events(timeout)?;
+            if !self.running {
+                continue;
+            }
             if !self.home {
                 let active = self.get_tab().active;
                 self.get_mut_tab().panes[active].scroll_to_input();
@@ -59,7 +62,7 @@ impl App {
 
                 self.tabs.push(Tab::new(term_rows - 2, term_cols - 4));
 
-                self.active_tab += 1;
+                self.active_tab = self.tabs.len() - 1;
             }
             Command::NextTab => {
                 let tab_count = self.tabs.len() - 1;
@@ -84,6 +87,18 @@ impl App {
             Command::DeletePane => {
                 let tab = self.get_mut_tab();
                 tab.del_pane();
+                if tab.panes.len() == 0 {
+                    self.tabs.remove(self.active_tab);
+                    let tab_count = self.tabs.len() - 1;
+                    if self.active_tab == 0 {
+                        self.active_tab = tab_count;
+                    } else {
+                        self.active_tab -= 1;
+                    }
+                }
+                if self.tabs.len() == 0 {
+                    self.running = false;
+                }
             }
             Command::NextPane => {
                 if self.get_tab().active == (self.get_tab().panes.len() - 1) {

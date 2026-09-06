@@ -30,12 +30,6 @@ Each item lists: what's wrong → why it's a problem → where → suggested fix
 - **Why it's a problem:** A reachable panic from ordinary keyboard input; also silently wrong for the other control ranges (Ctrl+@, Ctrl+[, Ctrl+], Ctrl+_, …).
 - **Fix:** Guard `matches!(c, 'a'..='z' | 'A'..='Z')` (lowercasing first) and handle the remaining control ranges explicitly — or use a key-to-bytes helper that already knows the mapping (this belongs in `Pane`, see #15).
 
-### 4. [BUG] New tab activates the wrong tab
-- **Where:** `src/app/application.rs:55-63` (`Command::NewTab` arm)
-- **What:** Alt+C pushes the new tab at the *end* of `self.tabs` but activates it with `self.active_tab += 1`. With tabs [A,B,C] and A active, this lands on B, not the new tab D.
-- **Why it's a problem:** The tab is created but not shown — the keybinding looks broken.
-- **Fix:** `self.active_tab = self.tabs.len() - 1;` after the push.
-
 ### 5. [BUG] Deleting the last pane panics
 - **Where:** `src/app/tabs.rs:148-157` (`del_pane`), consumed by `src/app/application.rs:34-35` and `:89`
 - **What:** With one pane left, `del_pane` computes `self.active - 1` with `active == 0` → usize underflow (debug panic). Even past that, it empties `panes`, and the next loop iteration hits `panes[active]` (`application.rs:35`) and `panes.len() - 1` (`application.rs:89`) on an empty vec.
