@@ -90,12 +90,6 @@ Each item lists: what's wrong → why it's a problem → where → suggested fix
   - **Complicates borrows:** the `active`/`get_mut_tab()` dance in the same method is a direct consequence of doing the write here instead of in a `&mut self` method on `Pane`.
 - **Fix:** Add `Pane::send_key(&mut self, code: KeyCode, modifiers: KeyModifiers)` (holding the escape map) and call that from `App`. This is also the natural landing spot for the encoding guards from #3/#7.
 
-### 17. [SMELL] Duplicated Code — horizontal/vertical rect layout
-- **Where:** `src/app/tabs.rs:40-51` (`horizontal_rects`) vs `:82-93` (`vertical_rects`)
-- **What:** Both split an area into `n` equal chunks plus distribute a remainder, differing only in axis (height/y vs width/x). Same `chunk`, `remainder`, loop, `chunk + u16::from(i < remainder)` shape.
-- **Why it's a problem:** Two copies of the same algorithm means a fix to the remainder-distribution (a classic off-by-one) has to be applied twice and can drift apart. The axis is the *only* difference, which is exactly the sort of thing a parameter captures.
-- **Fix:** One `split_along_axis(area, n, vertical: bool)` (or two thin wrappers calling a shared core). Borderline due to short bodies, but cheap and removes a real drift risk — do it alongside the tests from #11.
-
 ### 18. [SMELL] Primitive Obsession — `golden_rects` works in tuples
 - **Where:** `src/app/tabs.rs:95-119`
 - **What:** `golden_rects` uses `Vec<(u16,u16,u16,u16)>` for regions, converting to `Rect` only at the end, while every sibling layout method manipulates `Rect` directly. (Bonus naming oddity in the same function: the loop variable `_k` is underscore-prefixed *and* used as an index.)

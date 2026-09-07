@@ -1,12 +1,10 @@
-use std::u16;
-
 use crate::app::pane::Pane;
 use ratatui::{layout::Rect, Frame};
 use strum::{EnumIter, IntoEnumIterator};
 
 #[derive(EnumIter)]
 pub enum Grid {
-    Horizontale,
+    Horizontal,
     Vertical,
     Square,
     Golden,
@@ -35,10 +33,13 @@ impl Tab {
         Self {
             panes: vec![Pane::new(row, coll).unwrap()],
             active: 0,
-            grid: Grid::Horizontale,
+            grid: Grid::Horizontal,
         }
     }
     fn split_axis(area: Rect, n: u16, vertical: bool) -> Vec<Rect> {
+        if n == 0 {
+            return Vec::new();
+        }
         let mut rects = Vec::with_capacity(n as usize);
         let mut x = area.x;
         let mut y = area.y;
