@@ -1,13 +1,15 @@
+use std::u16;
+
 use crate::app::pane::Pane;
-use ratatui::{Frame, layout::Rect};
+use ratatui::{layout::Rect, Frame};
 use strum::{EnumIter, IntoEnumIterator};
 
 #[derive(EnumIter)]
 pub enum Grid {
-    HORIZONTALE,
-    VERTICAL,
-    SQUIRE,
-    GOLDER,
+    Horizontale,
+    Vertical,
+    Square,
+    Golden,
 }
 impl Grid {
     pub fn next(&self) -> Self {
@@ -33,21 +35,39 @@ impl Tab {
         Self {
             panes: vec![Pane::new(row, coll).unwrap()],
             active: 0,
-            grid: Grid::HORIZONTALE,
+            grid: Grid::Horizontale,
         }
     }
-
-    fn horizontal_rects(area: Rect, n: u16) -> Vec<Rect> {
+    fn split_axis(area: Rect, n: u16, vertical: bool) -> Vec<Rect> {
         let mut rects = Vec::with_capacity(n as usize);
-        let chunk = area.height / n;
-        let remainder = area.height % n;
+        let mut x = area.x;
         let mut y = area.y;
+        let mut height = area.height;
+        let mut width = area.width;
+        let axis = if vertical { area.width } else { area.height };
+        let chunk = axis / n;
+        let remainder = axis % n;
         for i in 0..n {
-            let height = chunk + u16::from(i < remainder);
-            rects.push(Rect::new(area.x, y, area.width, height));
-            y += height;
+            if vertical {
+                width = chunk + u16::from(i < remainder);
+            } else {
+                height = chunk + u16::from(i < remainder);
+            }
+            rects.push(Rect::new(x, y, width, height));
+            if vertical {
+                x += width;
+            } else {
+                y += height
+            }
         }
         rects
+    }
+
+    fn vertical_rects(area: Rect, n: u16) -> Vec<Rect> {
+        Self::split_axis(area, n, true)
+    }
+    fn horizontal_rects(area: Rect, n: u16) -> Vec<Rect> {
+        Self::split_axis(area, n, false)
     }
     fn grid_rects(area: Rect, n: u16) -> Vec<Rect> {
         if n == 0 {
@@ -75,19 +95,6 @@ impl Tab {
                 x += width;
             }
             y += row_height;
-        }
-        rects
-    }
-
-    fn vertical_rects(area: Rect, n: u16) -> Vec<Rect> {
-        let mut rects = Vec::with_capacity(n as usize);
-        let chunk = area.width / n;
-        let remainder = area.width % n;
-        let mut x = area.x;
-        for i in 0..n {
-            let width = chunk + u16::from(i < remainder);
-            rects.push(Rect::new(x, area.y, width, area.height));
-            x += width;
         }
         rects
     }
@@ -125,9 +132,9 @@ impl Tab {
         }
         let area = frame.area();
         let rects = match self.grid {
-            Grid::VERTICAL => Self::vertical_rects(area, total_panes),
-            Grid::SQUIRE => Self::grid_rects(area, total_panes),
-            Grid::GOLDER => Self::golden_rects(area, total_panes),
+            Grid::Vertical => Self::vertical_rects(area, total_panes),
+            Grid::Square => Self::grid_rects(area, total_panes),
+            Grid::Golden => Self::golden_rects(area, total_panes),
             _ => Self::horizontal_rects(area, total_panes),
         };
         // The single source of truth for pane sizing: every pane's virtual

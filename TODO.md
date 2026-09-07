@@ -90,12 +90,6 @@ Each item lists: what's wrong → why it's a problem → where → suggested fix
   - **Complicates borrows:** the `active`/`get_mut_tab()` dance in the same method is a direct consequence of doing the write here instead of in a `&mut self` method on `Pane`.
 - **Fix:** Add `Pane::send_key(&mut self, code: KeyCode, modifiers: KeyModifiers)` (holding the escape map) and call that from `App`. This is also the natural landing spot for the encoding guards from #3/#7.
 
-### 16. [SMELL] Mysterious Name — typo'd `Grid` variants
-- **Where:** `src/app/tabs.rs:7-10`
-- **What:** `Grid::HORIZONTALE`, `Grid::SQUIRE`, `Grid::GOLDER`.
-- **Why it's a problem:** Names are the primary UI. `SQUIRE` and `GOLDER` are clearly misspellings of SQUARE and GOLDEN; `HORIZONTALE` mixes English/French. Anyone reading `draw_tab`'s `match self.grid` gets actively misled about which layout each arm produces, and typos propagate to error messages/UI labels if used.
-- **Fix:** Rename to `Horizontal`, `Vertical`, `Square`, `Golden`. This also clears the four `upper_case_acronyms` clippy warnings.
-
 ### 17. [SMELL] Duplicated Code — horizontal/vertical rect layout
 - **Where:** `src/app/tabs.rs:40-51` (`horizontal_rects`) vs `:82-93` (`vertical_rects`)
 - **What:** Both split an area into `n` equal chunks plus distribute a remainder, differing only in axis (height/y vs width/x). Same `chunk`, `remainder`, loop, `chunk + u16::from(i < remainder)` shape.
