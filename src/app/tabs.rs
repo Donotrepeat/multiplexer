@@ -102,28 +102,35 @@ impl Tab {
 
     fn golden_rects(area: Rect, n: u16) -> Vec<Rect> {
         let phi = 0.618;
-        let mut regions: Vec<(u16, u16, u16, u16)> = Vec::with_capacity(n as usize);
-        regions.push((area.x, area.y, area.width, area.height));
+        let mut regions: Vec<Rect> = Vec::with_capacity(n as usize);
+        regions.push(Rect::new(area.x, area.y, area.width, area.height));
         let mut axis_h = false;
         for _k in 1..n {
-            let (x, y, w, h) = regions[_k as usize - 1];
+            let rec = regions[_k as usize - 1];
             if axis_h {
-                let kept_h = ((h as f64) * phi).round() as u16;
-                let kept_h = kept_h.max(1).min(h.saturating_sub(1));
-                regions[_k as usize - 1] = (x, y, w, kept_h);
-                regions.push((x, y + kept_h, w, h - kept_h));
+                let kept_h = ((rec.height as f64) * phi).round() as u16;
+                let kept_h = kept_h.max(1).min(rec.height.saturating_sub(1));
+                regions[_k as usize - 1] = Rect::new(rec.x, rec.y, rec.width, kept_h);
+                regions.push(Rect::new(
+                    rec.x,
+                    rec.y + kept_h,
+                    rec.width,
+                    rec.height - kept_h,
+                ));
             } else {
-                let kept_w = ((w as f64) * phi).round() as u16;
-                let kept_w = kept_w.max(1).min(w.saturating_sub(1));
-                regions[_k as usize - 1] = (x, y, kept_w, h);
-                regions.push((x + kept_w, y, w - kept_w, h));
+                let kept_w = ((rec.width as f64) * phi).round() as u16;
+                let kept_w = kept_w.max(1).min(rec.width.saturating_sub(1));
+                regions[_k as usize - 1] = Rect::new(rec.x, rec.y, kept_w, rec.height);
+                regions.push(Rect::new(
+                    rec.x + kept_w,
+                    rec.y,
+                    rec.width - kept_w,
+                    rec.height,
+                ));
             }
             axis_h = !axis_h;
         }
         regions
-            .iter()
-            .map(|&(x, y, w, h)| Rect::new(x, y, w, h))
-            .collect()
     }
 
     pub fn draw_tab(&mut self, frame: &mut Frame) {
