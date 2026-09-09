@@ -14,7 +14,6 @@ pub struct App {
     pub tabs: Vec<Tab>,
     pub running: bool,
     pub active_tab: usize,
-    pub home: bool,
 }
 impl App {
     /// runs the application's main loop until the user quits
@@ -33,10 +32,6 @@ impl App {
             self.handle_events(timeout)?;
             if !self.running {
                 continue;
-            }
-            if !self.home {
-                let active = self.get_tab().active;
-                self.get_mut_tab().panes[active].scroll_to_input();
             }
             terminal.draw(|frame| self.draw(frame))?;
         }
@@ -122,24 +117,21 @@ impl App {
             }
             Command::ScrollToTop => {
                 self.active_pane_mut().scroll_to_top();
-                self.home = true;
             }
             Command::ScrollToBottom => {
                 self.active_pane_mut().scroll_to_bottom();
-                self.home = false;
             }
             Command::ScrollPageUp => {
                 let visible = self.active_pane().visible_lines();
                 log::debug!("visible {visible}");
                 self.active_pane_mut().scroll_up(1);
-                self.home = false;
             }
             Command::ScrollPageDown => {
                 let visible = self.active_pane().visible_lines();
                 self.active_pane_mut().scroll_down(visible);
-                self.home = self.active_pane().at_bottom();
             }
             Command::SendKey(key) => self.send_key(key)?,
+            Command::Null => self.send_key(KeyEvent::new(KeyCode::Null, KeyModifiers::NONE))?,
         }
         Ok(())
     }

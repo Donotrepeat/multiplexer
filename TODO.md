@@ -18,35 +18,18 @@ Each item lists: what's wrong → why it's a problem → where → suggested fix
 - **Why it's a problem:** Home and End do the opposite of their names, and `at_bottom()` feeds the `App.home` flag (#22), so follow-cursor mode is armed by the wrong key.
 - **Fix:** Swap the semantics (`scroll_to_top` → max scrollback, `scroll_to_bottom` → `0`), or better: derive both from the parser's clamped scrollback instead of the hardcoded `1200` (see #2 and #19).
 
-### 2. [BUG] `at_bottom()` can never be true while history is short
-- **Where:** `src/app/pane.rs:234-236`
-- **What:** `at_bottom()` tests `get_scroll_offset() >= 1200`, but vt100 *clamps* the scrollback offset to the actual scrollback size. Until 1200 lines of history exist, `scrollback()` returns less than 1200, so `at_bottom()` stays `false` even with the live screen in view.
-- **Why it's a problem:** After pressing End on a fresh shell, `App.home` never flips back to "at input", so `run()` (`application.rs:33-36`) calls `scroll_to_input()` every frame — the user is pinned out of the bottom view.
-- **Fix:** Test the real boundary (once #1 fixes the direction, live view ⇔ `scrollback() == 0`), not a magic number.
-
 ### 3. [BUG] Ctrl+letter encoding can panic (byte underflow)
 - **Where:** `src/app/application.rs:147-149` (`send_key`)
 - **What:** `w.write_all(&[c as u8 - b'a' + 1])` assumes `c` is a lowercase `a..=z`. For uppercase (e.g. Ctrl+Shift+key, which some terminals report as `Char('C')`) or non-letters, `c as u8 - b'a'` underflows: panic in debug builds, garbage byte in release.
 - **Why it's a problem:** A reachable panic from ordinary keyboard input; also silently wrong for the other control ranges (Ctrl+@, Ctrl+[, Ctrl+], Ctrl+_, …).
 - **Fix:** Guard `matches!(c, 'a'..='z' | 'A'..='Z')` (lowercasing first) and handle the remaining control ranges explicitly — or use a key-to-bytes helper that already knows the mapping (this belongs in `Pane`, see #15).
 
-### 5. [BUG] Deleting the last pane panics
-- **Where:** `src/app/tabs.rs:148-157` (`del_pane`), consumed by `src/app/application.rs:34-35` and `:89`
-- **What:** With one pane left, `del_pane` computes `self.active - 1` with `active == 0` → usize underflow (debug panic). Even past that, it empties `panes`, and the next loop iteration hits `panes[active]` (`application.rs:35`) and `panes.len() - 1` (`application.rs:89`) on an empty vec.
-- **Why it's a problem:** Alt+R on a single-pane tab is an ordinary user action that crashes the app.
-- **Fix:** Guard in `del_pane` (`len() <= 1` → refuse, or close the tab). Closing the tab then needs App-level handling for the last remaining tab.
 
 ### 6. [BUG] Scroll state lives in three inconsistent coordinate systems
 - **Where:** `src/app/pane.rs:161-166` (`set_scroll_offset` — parser scrollback), `:188-195` (`scroll_to_input` — writes the `scroll_offset` *field only*, computed from a screen-relative cursor row), `:253-263` (`render_pane` — renders cells via the parser's scrollback but positions the cursor using the field)
 - **What:** The parser's scrollback (what the user sees) and `pane.scroll_offset` (what the cursor math uses) are updated by different code paths that don't agree: `scroll_to_input` never touches the parser; `set_scroll_offset` never updates the field's cursor-relative meaning.
 - **Why it's a problem:** After any manual scroll plus `scroll_to_input`, the cursor is drawn at a row that doesn't match the scrolled content — two sources of truth drift apart. This is the root cause that #21/#22 orbit around.
 - **Fix:** One source of truth: make the parser's scrollback the only scroll state, route all writes through a single method, and compute cursor position in the same coordinate system as `screen.cell()`.
-
-### 7. [BUG] Alt+unhandled keys type a bare letter into the shell
-- **Where:** `src/app/application.rs:150` — the fall-through `KeyCode::Char(c) => w.write_all(c.to_string().as_bytes())` in `send_key`
-- **What:** Alt combos not claimed by the multiplexer (anything but w/c/e/q/j/r/n/t) fall into normal input handling, which sends the character without the `ESC` prefix. Alt+X becomes a literal `x` in the child shell.
-- **Why it's a problem:** Contradicts PLAN.md §7 ("Alt+key → prefix with ESC"): programs with Alt bindings never see them, and stray letters appear at the prompt.
-- **Fix:** In the fall-through arm, if `key.modifiers.contains(KeyModifiers::ALT)`, write `b"\x1b"` before the char bytes — or deliberately swallow unhandled Alt combos. Pick one, on purpose.
 
 ---
 
@@ -90,12 +73,6 @@ Each item lists: what's wrong → why it's a problem → where → suggested fix
   - **Complicates borrows:** the `active`/`get_mut_tab()` dance in the same method is a direct consequence of doing the write here instead of in a `&mut self` method on `Pane`.
 - **Fix:** Add `Pane::send_key(&mut self, code: KeyCode, modifiers: KeyModifiers)` (holding the escape map) and call that from `App`. This is also the natural landing spot for the encoding guards from #3/#7.
 
-### 19. [SMELL] Primitive Obsession / magic literal — scrollback `1200` in four places
-- **Where:** `src/app/pane.rs:115` (parser init), `:203` (`scroll_to_bottom`), `:235` (`at_bottom`) — plus the test helper at `:364`
-- **What:** The scrollback buffer size `1200` is hardcoded four times with no shared name.
-- **Why it's a problem:** Four literal touchpoints that must stay in lockstep. If the parser's scrollback depth changes in one place but not another, `at_bottom()` and `scroll_to_bottom()` silently disagree about what "bottom" means. This literal is load-bearing for bugs #1/#2 — fixing those without naming it would keep the trap armed.
-- **Fix:** `const SCROLLBACK_SIZE: usize = 1200;` referenced everywhere.
-
 ### 20. [SMELL] Data Clump / Divergent Change — Pane's shared-state wiring
 - **Where:** `src/app/pane.rs:75-88`
 - **What:** Five `Arc<Mutex<…>>`/`Arc<AtomicBool>` fields (`vpty`, `pty_writer`, `screen_changed`, and the `title`/`title_shared`/`title_changed` trio) that must be created, cloned, and kept coherent between Pane, its reader thread, and `MuxCallbacks`.
@@ -104,14 +81,3 @@ Each item lists: what's wrong → why it's a problem → where → suggested fix
   - **Divergent Change:** `Pane` mixes several unrelated concerns — terminal emulation (`vpty`), PTY I/O plumbing (`pty_writer`, `pty_master`), thread signalling (`screen_changed`), scrolling state, and rendering. Each of those changes for different reasons, but they're all glued into one struct by hand-wiring shared state. The risk is that a change to one concern (e.g. the title channel) destabilises render or input paths, and the `Arc<Mutex<>>` wiring is easy to get wrong (deadlock, missed `swap(false)`).
 - **Fix:** Bundle the title triple into a small struct; consider consolidating the shared channel objects so their lifecycle is created/consumed in one place rather than five parallel fields.
 
-### 21. [SMELL] Mysterious Name — `scroll_to_input`
-- **Where:** `src/app/pane.rs:188-195`
-- **What:** The name suggests "go to where I am typing", but the body computes `cursor_row - visible_lines` — scrolling so the cursor line sits at the *top* of the viewport.
-- **Why it's a problem:** The name promises convenience-seeking behaviour; the implementation actually pins the cursor to the top edge. A future reader (or the call site in `run()`) will misread intent and it couples oddly with `home`. The vagueness also obscures that it writes directly to `self.scroll_offset` rather than going through `set_scroll_offset` — the inconsistency behind bug #6.
-- **Fix:** Rename to something accurate, e.g. `scroll_cursor_to_top` / `align_cursor_to_viewport_top`, and route through `set_scroll_offset` (or whatever single write path #6 establishes).
-
-### 22. [SMELL] Speculative Generality — `App.home` flag
-- **Where:** `src/app/application.rs:16`, set in `main.rs:30`, toggled in `application.rs:110/114/120/125`, read only in `run()` (`:34`)
-- **What:** `home: bool` is initialised in `main`, flipped by several scroll-key branches, and consumed in exactly one place to decide whether to call `scroll_to_input`.
-- **Why it's a problem:** The flag's meaning is implicit and only coherent if every write site stays consistent; it's scattered across the event handler as a side effect. Its value (a scroll-mode toggle) is really a property of the Pane's scroll state, not of the whole App. It smells like generality the caller doesn't need — a second consumer would immediately need the invariant documented. Bugs #1/#2 currently make every write site semantically wrong anyway.
-- **Fix:** Fold the "is scrolled home / at input" state into Pane's scroll model (it already knows offset vs cursor — see #6), or compute the needed behaviour from scratch each `run()` iteration instead of carrying a bool.

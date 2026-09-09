@@ -27,7 +27,6 @@ fn main() -> Result<()> {
         tabs: vec![tabs::Tab::new(term_rows - 2, term_cols - 4)],
         running: true,
         active_tab: 0,
-        home: true,
     };
     ratatui::run(|terminal| app.run(terminal))?;
 

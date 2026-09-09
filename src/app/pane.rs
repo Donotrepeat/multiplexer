@@ -13,6 +13,9 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{Block, Paragraph},
 };
+
+const SCROLLBACK_SIZE: usize = 1200;
+
 pub struct MuxCallbacks {
     writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
     title: Arc<Mutex<Option<String>>>,
@@ -112,7 +115,10 @@ impl Pane {
             title_changed: title_changed.clone(),
         };
         let vpty = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
-            row, coll, 1200, callbacks,
+            row,
+            coll,
+            SCROLLBACK_SIZE,
+            callbacks,
         )));
         let vpt_clone = Arc::clone(&vpty);
 
@@ -185,14 +191,6 @@ impl Pane {
         let new_offset = current.saturating_sub(lines);
         self.set_scroll_offset(new_offset);
     }
-    pub fn scroll_to_input(&mut self) {
-        let parser = self.vpty.lock().unwrap();
-        let screen = parser.screen();
-        let row = screen.cursor_position().0 as usize;
-        let visible = self.visible_lines();
-
-        self.scroll_offset = row.saturating_sub(visible);
-    }
     // Scroll to top (offset = 0)
     pub fn scroll_to_top(&mut self) {
         self.set_scroll_offset(0);
@@ -200,7 +198,7 @@ impl Pane {
 
     // Scroll to bottom (offset = max scrollback)
     pub fn scroll_to_bottom(&mut self) {
-        self.set_scroll_offset(1200);
+        self.set_scroll_offset(SCROLLBACK_SIZE);
     }
 
     // Get number of visible lines (this pane's current virtual terminal height)
@@ -230,10 +228,6 @@ impl Pane {
         self.vpty.lock().unwrap().screen_mut().set_size(rows, cols);
     }
 
-    // Check if at bottom
-    pub fn at_bottom(&self) -> bool {
-        self.get_scroll_offset() >= 1200
-    }
     pub fn render_pane(&self, frame: &mut Frame, area: Rect, is_active: bool) {
         let parser = self.vpty.lock().unwrap();
         let screen = parser.screen();
@@ -361,7 +355,7 @@ mod tests {
         let parser = vt100::Parser::new_with_callbacks(
             24,
             80,
-            1200,
+            SCROLLBACK_SIZE,
             MuxCallbacks {
                 writer: Arc::clone(&writer),
                 title_changed,
