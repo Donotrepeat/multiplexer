@@ -81,7 +81,6 @@ pub struct Pane {
     pub pty_master: Box<dyn MasterPty>,
     pub screen_changed: Arc<AtomicBool>,
     // Scroll position tracking
-    pub scroll_offset: usize,
     // Last size this pane's virtual terminal was set to
     rows: u16,
     cols: u16,
@@ -145,7 +144,6 @@ impl Pane {
             pty_writer,
             pty_master: pair.master,
             screen_changed,
-            scroll_offset: 0,
             rows: row,
             cols: coll,
             title: "~".to_string(),
@@ -167,7 +165,6 @@ impl Pane {
     pub fn set_scroll_offset(&mut self, offset: usize) {
         let mut parser = self.vpty.lock().unwrap();
         parser.screen_mut().set_scrollback(offset);
-        self.scroll_offset = offset;
         log::debug!("offset {offset}");
     }
 
@@ -193,12 +190,12 @@ impl Pane {
     }
     // Scroll to top (offset = 0)
     pub fn scroll_to_top(&mut self) {
-        self.set_scroll_offset(0);
+        self.set_scroll_offset(usize::MAX);
     }
 
     // Scroll to bottom (offset = max scrollback)
     pub fn scroll_to_bottom(&mut self) {
-        self.set_scroll_offset(SCROLLBACK_SIZE);
+        self.set_scroll_offset(0);
     }
 
     // Get number of visible lines (this pane's current virtual terminal height)
@@ -246,13 +243,10 @@ impl Pane {
 
         if is_active {
             let (row, col) = screen.cursor_position();
-            if row as usize >= self.scroll_offset {
-                let view_row = (row as usize - self.scroll_offset) as u16;
-                if view_row < inner.height {
-                    let x = (inner.x + col).min(inner.right().saturating_sub(1));
-                    let y = inner.y + view_row;
-                    frame.set_cursor_position(Position::new(x, y));
-                }
+            let view_row = row as usize + parser.screen().scrollback();
+            if view_row < inner.height as usize {
+                let x = (inner.x + col).min(inner.right().saturating_sub(1));
+                frame.set_cursor_position(Position::new(x, inner.y + view_row as u16));
             }
         }
     }

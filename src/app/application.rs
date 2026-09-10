@@ -82,7 +82,7 @@ impl App {
             Command::DeletePane => {
                 let tab = self.get_mut_tab();
                 tab.del_pane();
-                if tab.panes.len() == 0 {
+                if tab.panes.is_empty() {
                     self.tabs.remove(self.active_tab);
                     let tab_count = self.tabs.len() - 1;
                     if self.active_tab == 0 {
@@ -91,7 +91,7 @@ impl App {
                         self.active_tab -= 1;
                     }
                 }
-                if self.tabs.len() == 0 {
+                if self.tabs.is_empty() {
                     self.running = false;
                 }
             }

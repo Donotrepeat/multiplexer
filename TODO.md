@@ -12,24 +12,12 @@ Each item lists: what's wrong → why it's a problem → where → suggested fix
 
 ## Correctness bugs (hard problems — fix first)
 
-### 1. [BUG] Scroll direction is inverted
-- **Where:** `src/app/pane.rs:197-199` (`scroll_to_top`), `:202-204` (`scroll_to_bottom`), `:234-236` (`at_bottom`); wired to Home/End via `SCROLL_BINDINGS` (`src/app/command.rs:39-44`) and the `ScrollToTop`/`ScrollToBottom` arms (`src/app/application.rs:108-115`)
-- **What:** vt100's scrollback offset counts from the *bottom*: `set_scrollback(0)` shows the live screen, and larger values reach further back into history (vt100 0.16.2 `Screen::set_scrollback` docs). The code assumes the opposite: `scroll_to_top()` sets offset `0` — jumping to the **bottom** (live view) — while `scroll_to_bottom()` sets `1200`, jumping to the **top** (deepest history). `at_bottom()` (`offset >= 1200`) is therefore true exactly when the view is at the *top*.
-- **Why it's a problem:** Home and End do the opposite of their names, and `at_bottom()` feeds the `App.home` flag (#22), so follow-cursor mode is armed by the wrong key.
-- **Fix:** Swap the semantics (`scroll_to_top` → max scrollback, `scroll_to_bottom` → `0`), or better: derive both from the parser's clamped scrollback instead of the hardcoded `1200` (see #2 and #19).
-
 ### 3. [BUG] Ctrl+letter encoding can panic (byte underflow)
 - **Where:** `src/app/application.rs:147-149` (`send_key`)
 - **What:** `w.write_all(&[c as u8 - b'a' + 1])` assumes `c` is a lowercase `a..=z`. For uppercase (e.g. Ctrl+Shift+key, which some terminals report as `Char('C')`) or non-letters, `c as u8 - b'a'` underflows: panic in debug builds, garbage byte in release.
 - **Why it's a problem:** A reachable panic from ordinary keyboard input; also silently wrong for the other control ranges (Ctrl+@, Ctrl+[, Ctrl+], Ctrl+_, …).
 - **Fix:** Guard `matches!(c, 'a'..='z' | 'A'..='Z')` (lowercasing first) and handle the remaining control ranges explicitly — or use a key-to-bytes helper that already knows the mapping (this belongs in `Pane`, see #15).
 
-
-### 6. [BUG] Scroll state lives in three inconsistent coordinate systems
-- **Where:** `src/app/pane.rs:161-166` (`set_scroll_offset` — parser scrollback), `:188-195` (`scroll_to_input` — writes the `scroll_offset` *field only*, computed from a screen-relative cursor row), `:253-263` (`render_pane` — renders cells via the parser's scrollback but positions the cursor using the field)
-- **What:** The parser's scrollback (what the user sees) and `pane.scroll_offset` (what the cursor math uses) are updated by different code paths that don't agree: `scroll_to_input` never touches the parser; `set_scroll_offset` never updates the field's cursor-relative meaning.
-- **Why it's a problem:** After any manual scroll plus `scroll_to_input`, the cursor is drawn at a row that doesn't match the scrolled content — two sources of truth drift apart. This is the root cause that #21/#22 orbit around.
-- **Fix:** One source of truth: make the parser's scrollback the only scroll state, route all writes through a single method, and compute cursor position in the same coordinate system as `screen.cell()`.
 
 ---
 
