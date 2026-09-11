@@ -7,7 +7,6 @@ use pane::Pane;
 use ratatui::{DefaultTerminal, Frame};
 
 use crossterm::terminal::size;
-use std::io::Write;
 use std::sync::atomic::Ordering;
 
 pub struct App {
@@ -138,25 +137,8 @@ impl App {
 
     fn send_key(&mut self, key: KeyEvent) -> Result<()> {
         let active = self.get_tab().active;
-        if let Some(active_pane) = self.get_mut_tab().panes.get_mut(active)
-            && let Some(ref mut w) = *active_pane.pty_writer.lock().unwrap()
-        {
-            match key.code {
-                KeyCode::Enter => w.write_all(b"\r")?,
-                KeyCode::Tab => w.write_all(b"\t")?,
-                KeyCode::Backspace => w.write_all(b"\x7f")?,
-                KeyCode::Esc => w.write_all(b"\x1b")?,
-                KeyCode::Up => w.write_all(b"\x1b[A")?,
-                KeyCode::Down => w.write_all(b"\x1b[B")?,
-                KeyCode::Right => w.write_all(b"\x1b[C")?,
-                KeyCode::Left => w.write_all(b"\x1b[D")?,
-                KeyCode::Delete => w.write_all(b"\x1b[3~")?,
-                KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    w.write_all(&[c as u8 - b'a' + 1])?;
-                }
-                KeyCode::Char(c) => w.write_all(c.to_string().as_bytes())?,
-                _ => {}
-            };
+        if let Some(active_pane) = self.get_mut_tab().panes.get_mut(active) {
+            active_pane.write_key(key)?;
         }
         Ok(())
     }

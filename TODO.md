@@ -11,14 +11,6 @@ Each item lists: what's wrong → why it's a problem → where → suggested fix
 ---
 
 ## Correctness bugs (hard problems — fix first)
-
-### 3. [BUG] Ctrl+letter encoding can panic (byte underflow)
-- **Where:** `src/app/application.rs:147-149` (`send_key`)
-- **What:** `w.write_all(&[c as u8 - b'a' + 1])` assumes `c` is a lowercase `a..=z`. For uppercase (e.g. Ctrl+Shift+key, which some terminals report as `Char('C')`) or non-letters, `c as u8 - b'a'` underflows: panic in debug builds, garbage byte in release.
-- **Why it's a problem:** A reachable panic from ordinary keyboard input; also silently wrong for the other control ranges (Ctrl+@, Ctrl+[, Ctrl+], Ctrl+_, …).
-- **Fix:** Guard `matches!(c, 'a'..='z' | 'A'..='Z')` (lowercasing first) and handle the remaining control ranges explicitly — or use a key-to-bytes helper that already knows the mapping (this belongs in `Pane`, see #15).
-
-
 ---
 
 ## Tooling & hygiene

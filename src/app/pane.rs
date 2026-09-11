@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use ratatui::prelude::Position;
 use ratatui::style::Stylize;
@@ -77,7 +78,7 @@ impl vt100::Callbacks for MuxCallbacks {
 
 pub struct Pane {
     pub vpty: Arc<Mutex<vt100::Parser<MuxCallbacks>>>,
-    pub pty_writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
+    pty_writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
     pub pty_master: Box<dyn MasterPty>,
     pub screen_changed: Arc<AtomicBool>,
     // Scroll position tracking
@@ -151,6 +152,15 @@ impl Pane {
             title_changed,
         })
     }
+    /// Forward a key event to the pane's PTY as the bytes a real terminal
+    /// would send for it. No-op if the writer is gone (child exited).
+    pub fn write_key(&mut self, key: KeyEvent) -> Result<()> {
+        if let Some(w) = self.pty_writer.lock().unwrap().as_mut() {
+            w.write_all(&key_to_bytes(&key))?;
+        }
+        Ok(())
+    }
+
     pub fn sync_title(&mut self) -> bool {
         if self.title_changed.swap(false, Ordering::Relaxed)
             && let Some(t) = self.title_shared.lock().unwrap().clone()
@@ -251,6 +261,43 @@ impl Pane {
         }
     }
 }
+fn key_to_bytes(key: &KeyEvent) -> Vec<u8> {
+    match key.code {
+        KeyCode::Enter => b"\r".to_vec(),
+        KeyCode::Tab => b"\t".to_vec(),
+        KeyCode::Backspace => b"\x7f".to_vec(),
+        KeyCode::Esc => b"\x1b".to_vec(),
+        KeyCode::Up => b"\x1b[A".to_vec(),
+        KeyCode::Down => b"\x1b[B".to_vec(),
+        KeyCode::Right => b"\x1b[C".to_vec(),
+        KeyCode::Left => b"\x1b[D".to_vec(),
+        KeyCode::Delete => b"\x1b[3~".to_vec(),
+        KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            match control_char_byte(c) {
+                Some(b) => vec![b],
+                None => c.to_string().into_bytes(),
+            }
+        }
+        KeyCode::Char(c) => c.to_string().into_bytes(),
+        _ => Vec::new(),
+    }
+}
+
+fn control_char_byte(c: char) -> Option<u8> {
+    let c = c.to_ascii_lowercase();
+    match c {
+        'a'..='z' => Some(c as u8 - b'a' + 1),
+        '@' | ' ' => Some(0x00),
+        '[' => Some(0x1b),
+        '\\' => Some(0x1c),
+        ']' => Some(0x1d),
+        '^' => Some(0x1e),
+        '_' | '/' => Some(0x1f),
+        '?' => Some(0x7f),
+        _ => None,
+    }
+}
+
 fn build_style(cell: &vt100::Cell) -> Style {
     let mut style = Style::default();
 
@@ -406,5 +453,102 @@ mod tests {
         let (mut parser, bytes) = test_parser();
         parser.process(b"\x1b[?5n");
         assert!(bytes.lock().unwrap().is_empty());
+    }
+
+    fn pressed(code: KeyCode, modifiers: KeyModifiers) -> Vec<u8> {
+        key_to_bytes(&KeyEvent::new(code, modifiers))
+    }
+
+    #[test]
+    fn control_letters_encode_to_c0() {
+        for (i, c) in ('a'..='z').enumerate() {
+            assert_eq!(
+                pressed(KeyCode::Char(c), KeyModifiers::CONTROL),
+                vec![(i + 1) as u8],
+                "Ctrl+{c}"
+            );
+        }
+    }
+
+    #[test]
+    fn control_uppercase_and_shift_are_normalized() {
+        assert_eq!(
+            pressed(KeyCode::Char('C'), KeyModifiers::CONTROL),
+            vec![0x03],
+            "Ctrl+C reported as uppercase"
+        );
+        assert_eq!(
+            pressed(
+                KeyCode::Char('C'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT
+            ),
+            vec![0x03],
+            "Ctrl+Shift+C"
+        );
+    }
+
+    #[test]
+    fn control_punctuation_covers_rest_of_c0() {
+        let cases = [
+            ('@', 0x00),
+            (' ', 0x00),
+            ('[', 0x1b),
+            ('\\', 0x1c),
+            (']', 0x1d),
+            ('^', 0x1e),
+            ('_', 0x1f),
+            ('/', 0x1f),
+            ('?', 0x7f),
+        ];
+        for (c, expected) in cases {
+            assert_eq!(
+                pressed(KeyCode::Char(c), KeyModifiers::CONTROL),
+                vec![expected],
+                "Ctrl+{c}"
+            );
+        }
+    }
+
+    #[test]
+    fn control_on_unmappable_char_is_sent_literally() {
+        assert_eq!(
+            pressed(KeyCode::Char('1'), KeyModifiers::CONTROL),
+            b"1".to_vec()
+        );
+        assert_eq!(
+            pressed(KeyCode::Char('é'), KeyModifiers::CONTROL),
+            "é".as_bytes().to_vec()
+        );
+    }
+
+    #[test]
+    fn navigation_and_edit_keys_get_terminal_sequences() {
+        let cases = [
+            (KeyCode::Enter, &b"\r"[..]),
+            (KeyCode::Tab, b"\t"),
+            (KeyCode::Backspace, b"\x7f"),
+            (KeyCode::Esc, b"\x1b"),
+            (KeyCode::Up, b"\x1b[A"),
+            (KeyCode::Down, b"\x1b[B"),
+            (KeyCode::Right, b"\x1b[C"),
+            (KeyCode::Left, b"\x1b[D"),
+            (KeyCode::Delete, b"\x1b[3~"),
+            (KeyCode::Null, b""),
+        ];
+        for (code, expected) in cases {
+            assert_eq!(pressed(code, KeyModifiers::NONE), expected, "{code:?}");
+        }
+    }
+
+    #[test]
+    fn plain_chars_are_sent_as_utf8() {
+        assert_eq!(
+            pressed(KeyCode::Char('a'), KeyModifiers::NONE),
+            b"a".to_vec()
+        );
+        assert_eq!(
+            pressed(KeyCode::Char('é'), KeyModifiers::NONE),
+            "é".as_bytes().to_vec()
+        );
     }
 }
