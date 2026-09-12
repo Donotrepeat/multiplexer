@@ -15,25 +15,6 @@ Each item lists: what's wrong → why it's a problem → where → suggested fix
 
 ## Tooling & hygiene
 
-
-### 9. [HYGIENE] Panic hygiene: unwraps on fallible I/O + no terminal-restoring panic hook
-- **Where:** `src/app/tabs.rs:34` (`Pane::new(..).unwrap()`), `src/app/pane.rs:229` (`resize(..).unwrap()`), `src/app/application.rs:98` (`get_size().unwrap()`), and `lock().unwrap()` throughout (`application.rs:135`, `pane.rs:129`, `:162`, `:170`, `:238`)
-- **What:** `Tab::new` can't propagate `Pane::new`'s error, so it unwraps. A panic in the reader thread while holding the vpty mutex poisons it → the next `lock().unwrap()` in `render_pane` takes down the main thread too. No panic hook restores the terminal, so any crash leaves raw mode on and the user's shell unusable.
-- **Why it's a problem:** One dropped PTY or panicking thread crashes the whole app *and* trashes the user's terminal state.
-- **Fix:** Make `Tab::new` return `Result`; replace unwraps with `?`/logged failures; install a panic hook that restores the terminal (`disable_raw_mode` + leave alternate screen) before exiting.
-
-### 10. [PERF] vpty mutex held across the whole render conversion
-- **Where:** `src/app/pane.rs:237-251` — `render_pane` keeps the parser lock while `vterm_to_ratatui` walks every cell
-- **What:** PLAN.md "Step 2" prescribed cloning the screen under the lock and converting outside it; instead the guard is held through the entire span-building loop (every cell × every pane, up to 60 fps).
-- **Why it's a problem:** The reader thread stalls on every frame's render — PTY ingestion gains latency exactly when output is flowing.
-- **Fix:** Clone the screen under the lock, convert outside it. Also worth coalescing runs of identical style into one `Span` instead of one span per cell.
-
-### 11. [RISK] Layout math has zero test coverage; no CI
-- **Where:** `src/app/tabs.rs:40-119` (`horizontal_rects`, `grid_rects`, `vertical_rects`, `golden_rects`)
-- **What:** The most algorithmic, off-by-one-prone code in the crate (remainder distribution, saturating splits, `div_ceil` balancing) has no tests; existing tests cover only `MuxCallbacks` replies and the logger. No CI workflow in the repo.
-- **Why it's a problem:** Refactors like #17/#18 are exactly when this code breaks silently.
-- **Fix:** Unit tests asserting exact `Rect` outputs for n = 1..8 at a fixed area (including non-divisible sizes) plus a golden-ratio case; minimal CI running `cargo fmt --check && cargo clippy -- -D warnings && cargo test`.
-
 ---
 
 ## Clippy / compiler warnings (tooling-enforced)

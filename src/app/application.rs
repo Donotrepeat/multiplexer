@@ -2,7 +2,7 @@ use crate::app::command::{self, Command};
 use crate::app::pane;
 use crate::app::tabs::Tab;
 use anyhow::{Ok, Result};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::KeyEvent;
 use pane::Pane;
 use ratatui::{DefaultTerminal, Frame};
 
@@ -54,7 +54,7 @@ impl App {
                 let term_rows = term_rows.max(1);
                 let term_cols = term_cols.max(1);
 
-                self.tabs.push(Tab::new(term_rows - 2, term_cols - 4));
+                self.tabs.push(Tab::new(term_rows - 2, term_cols - 4)?);
 
                 self.active_tab = self.tabs.len() - 1;
             }
@@ -130,7 +130,6 @@ impl App {
                 self.active_pane_mut().scroll_down(visible);
             }
             Command::SendKey(key) => self.send_key(key)?,
-            Command::Null => self.send_key(KeyEvent::new(KeyCode::Null, KeyModifiers::NONE))?,
         }
         Ok(())
     }

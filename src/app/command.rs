@@ -16,7 +16,6 @@ pub enum Command {
     ScrollPageDown,
     /// Not a multiplexer hotkey: forward the key to the active pane's PTY.
     SendKey(KeyEvent),
-    Null,
 }
 
 /// Multiplexer hotkeys: Alt+letter → command.
@@ -49,8 +48,6 @@ pub fn resolve(key: KeyEvent) -> Command {
         && let Some((_, command)) = ALT_BINDINGS.iter().find(|(ch, _)| *ch == c)
     {
         return *command;
-    } else if key.modifiers.contains(KeyModifiers::ALT) && !key.code.is_null() {
-        return Command::Null;
     }
     if let Some((_, command)) = SCROLL_BINDINGS.iter().find(|(code, _)| *code == key.code) {
         return *command;

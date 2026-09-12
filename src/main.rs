@@ -14,6 +14,16 @@ fn set_terminal_title(title: &str) {
 }
 
 fn main() -> Result<()> {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = crossterm::terminal::disable_raw_mode(); // leave raw mode
+        let _ = crossterm::execute!(
+            std::io::stdout(), // leave alternate screen
+            crossterm::terminal::LeaveAlternateScreen
+        );
+        default_hook(info); // still print the panic
+    }));
+
     logging::init(LevelFilter::Trace)
         .map_err(|e| anyhow::anyhow!("failed to init logger: {e:?}"))?;
     enable_raw_mode()?;
@@ -24,7 +34,7 @@ fn main() -> Result<()> {
     let term_cols = term_cols.max(1);
 
     let mut app = App {
-        tabs: vec![tabs::Tab::new(term_rows - 2, term_cols - 4)],
+        tabs: vec![tabs::Tab::new(term_rows - 2, term_cols - 4)?],
         running: true,
         active_tab: 0,
     };

@@ -1,8 +1,9 @@
 use crate::app::pane::Pane;
-use ratatui::{layout::Rect, Frame};
+use ratatui::{Frame, layout::Rect};
 use strum::{EnumIter, IntoEnumIterator};
 
-#[derive(EnumIter)]
+use anyhow::Result;
+#[derive(EnumIter, Debug, Clone, Copy)]
 pub enum Grid {
     Horizontal,
     Vertical,
@@ -28,13 +29,15 @@ pub struct Tab {
 }
 
 impl Tab {
-    pub fn new(row: u16, coll: u16) -> Self {
+    pub fn new(row: u16, coll: u16) -> Result<Self> {
         log::debug!("screen {row},{coll}");
-        Self {
-            panes: vec![Pane::new(row, coll).unwrap()],
+        let panes = vec![Pane::new(row, coll)?];
+
+        Ok(Self {
+            panes,
             active: 0,
             grid: Grid::Horizontal,
-        }
+        })
     }
     fn split_axis(area: Rect, n: u16, vertical: bool) -> Vec<Rect> {
         if n == 0 {
@@ -77,7 +80,7 @@ impl Tab {
         let mut rects = Vec::with_capacity(n as usize);
         let mut columns = (n as f64).sqrt().ceil().max(1.0) as u16;
         let mut rows = n.div_ceil(columns);
-        if rows < 2 {
+        if n > 1 && rows < 2 {
             rows = 2;
         }
         columns = n.div_ceil(rows);
@@ -169,5 +172,178 @@ impl Tab {
 
         self.panes.remove(self.active);
         self.active = new_active;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const AREA: Rect = Rect::new(2, 3, 80, 24);
+
+    fn rects(grid: Grid, n: u16) -> Vec<Rect> {
+        match grid {
+            Grid::Horizontal => Tab::horizontal_rects(AREA, n),
+            Grid::Vertical => Tab::vertical_rects(AREA, n),
+            Grid::Square => Tab::grid_rects(AREA, n),
+            Grid::Golden => Tab::golden_rects(AREA, n),
+        }
+    }
+
+    fn assert_tiled(tile: &[Rect]) {
+        for (i, r) in tile.iter().enumerate() {
+            assert!(r.width > 0 && r.height > 0, "rect {i} empty: {r:?}");
+            assert!(
+                r.x >= AREA.x
+                    && r.y >= AREA.y
+                    && r.right() <= AREA.right()
+                    && r.bottom() <= AREA.bottom(),
+                "rect {i} escapes area: {r:?}"
+            );
+        }
+        // Exact partition: rects are disjoint and cover the whole area.
+        let area: u32 = tile.iter().map(|r| r.width as u32 * r.height as u32).sum();
+        assert_eq!(
+            area,
+            u32::from(AREA.width) * u32::from(AREA.height),
+            "rects do not tile the area exactly"
+        );
+        // Disjointness: no rect starts inside another.
+        for (i, a) in tile.iter().enumerate() {
+            for (j, b) in tile.iter().enumerate() {
+                if i != j {
+                    assert!(
+                        a.x >= b.right()
+                            || b.x >= a.right()
+                            || a.y >= b.bottom()
+                            || b.y >= a.bottom(),
+                        "rects {i} and {j} overlap: {a:?} vs {b:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn split_zero_panes_is_empty() {
+        assert!(rects(Grid::Horizontal, 0).is_empty());
+        assert!(rects(Grid::Vertical, 0).is_empty());
+        assert!(rects(Grid::Square, 0).is_empty());
+    }
+
+    #[test]
+    fn horizontal_splits_exact() {
+        // 24 / 3 = 8 rem 0: horizontal grid stacks panes vertically.
+        assert_eq!(
+            rects(Grid::Horizontal, 3),
+            vec![
+                Rect::new(2, 3, 80, 8),
+                Rect::new(2, 11, 80, 8),
+                Rect::new(2, 19, 80, 8),
+            ]
+        );
+        // 24 / 4 = 6 rem 0: even split.
+        assert_eq!(
+            rects(Grid::Horizontal, 4),
+            vec![
+                Rect::new(2, 3, 80, 6),
+                Rect::new(2, 9, 80, 6),
+                Rect::new(2, 15, 80, 6),
+                Rect::new(2, 21, 80, 6),
+            ]
+        );
+    }
+    #[test]
+    fn vertical_splits_exact() {
+        // 80 / 5 = 16 rem 0: vertical grid splits along the width axis.
+        assert_eq!(
+            rects(Grid::Vertical, 5),
+            vec![
+                Rect::new(2, 3, 16, 24),
+                Rect::new(18, 3, 16, 24),
+                Rect::new(34, 3, 16, 24),
+                Rect::new(50, 3, 16, 24),
+                Rect::new(66, 3, 16, 24),
+            ]
+        );
+        // 80 / 7 = 11 rem 3.
+        assert_eq!(
+            rects(Grid::Vertical, 7),
+            vec![
+                Rect::new(2, 3, 12, 24),
+                Rect::new(14, 3, 12, 24),
+                Rect::new(26, 3, 12, 24),
+                Rect::new(38, 3, 11, 24),
+                Rect::new(49, 3, 11, 24),
+                Rect::new(60, 3, 11, 24),
+                Rect::new(71, 3, 11, 24),
+            ]
+        );
+    }
+
+    #[test]
+    fn square_grid_exact() {
+        // 5 panes: ceil(sqrt(5)) = 3 columns -> rows = ceil(5/3) = 2,
+        // columns rebalanced to ceil(5/2) = 3. Row heights 24/2 = 12.
+        // Row 0: 3 cells of width ceil(80/3) = 27, 27, 26.
+        // Row 1: 2 cells of width 40, 40.
+        assert_eq!(
+            rects(Grid::Square, 5),
+            vec![
+                Rect::new(2, 3, 27, 12),
+                Rect::new(29, 3, 27, 12),
+                Rect::new(56, 3, 26, 12),
+                Rect::new(2, 15, 40, 12),
+                Rect::new(42, 15, 40, 12),
+            ]
+        );
+        // 7 panes: columns = ceil(sqrt(7)) = 3 -> rows = ceil(7/3) = 3,
+        // columns rebalanced to ceil(7/3) = 3. Heights 24/3 = 8.
+        // Row 0 and 1: 3 cells (27, 27, 26); row 2: 1 cell of width 80.
+        assert_eq!(
+            rects(Grid::Square, 7),
+            vec![
+                Rect::new(2, 3, 27, 8),
+                Rect::new(29, 3, 27, 8),
+                Rect::new(56, 3, 26, 8),
+                Rect::new(2, 11, 27, 8),
+                Rect::new(29, 11, 27, 8),
+                Rect::new(56, 11, 26, 8),
+                Rect::new(2, 19, 80, 8),
+            ]
+        );
+    }
+
+    #[test]
+    fn golden_splits_exact() {
+        // Alternating width/height splits at phi = 0.618, rounding to nearest.
+        assert_eq!(
+            rects(Grid::Golden, 4),
+            vec![
+                Rect::new(2, 3, 49, 24),  // 80 * 0.618 = 49.44 -> 49
+                Rect::new(51, 3, 31, 15), // 31-wide remnant, split on height: 24*0.618 = 14.83 -> 15
+                Rect::new(51, 18, 19, 9), // 15-high remnant, split on width: 31*0.618 = 19.16 -> 19
+                Rect::new(70, 18, 12, 9), // 19-wide remnant split: 19*0.618 = 11.74 -> 12
+            ]
+        );
+    }
+
+    #[test]
+    fn all_grids_fill_area_for_n_1_to_8() {
+        for n in 1..=8u16 {
+            // Tiling grids must exactly partition the area.
+            for grid in [Grid::Horizontal, Grid::Vertical, Grid::Square] {
+                let tile = rects(grid, n);
+                assert_eq!(tile.len(), n as usize, "{grid:?} n={n}");
+                assert_tiled(&tile);
+            }
+            // Golden rects nest instead of tiling: just require non-empty
+            // rects that stay inside the area.
+            for r in rects(Grid::Golden, n) {
+                assert!(r.width > 0 && r.height > 0);
+                assert!(r.x >= AREA.x && r.y >= AREA.y);
+                assert!(r.right() <= AREA.right() && r.bottom() <= AREA.bottom());
+            }
+        }
     }
 }

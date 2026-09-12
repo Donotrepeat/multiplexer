@@ -236,15 +236,17 @@ impl Pane {
     }
 
     pub fn render_pane(&self, frame: &mut Frame, area: Rect, is_active: bool) {
-        let parser = self.vpty.lock().unwrap();
-        let screen = parser.screen();
+        let screen = {
+            let parser = self.vpty.lock().unwrap_or_else(|e| e.into_inner());
+            parser.screen().clone()
+        };
         let (screen_rows, _cols) = screen.size();
         let inner = area.inner(Margin {
             horizontal: 1,
             vertical: 1,
         });
         let rows = (screen_rows as usize).min(inner.height as usize);
-        let text = vterm_to_ratatui(screen, rows);
+        let text = vterm_to_ratatui(&screen, rows);
         frame.render_widget(
             Paragraph::new(text)
                 .block(Block::bordered().title(self.title.clone().bold().fg(Color::Cyan))),
@@ -253,7 +255,7 @@ impl Pane {
 
         if is_active {
             let (row, col) = screen.cursor_position();
-            let view_row = row as usize + parser.screen().scrollback();
+            let view_row = row as usize + screen.scrollback();
             if view_row < inner.height as usize {
                 let x = (inner.x + col).min(inner.right().saturating_sub(1));
                 frame.set_cursor_position(Position::new(x, inner.y + view_row as u16));
@@ -261,7 +263,19 @@ impl Pane {
         }
     }
 }
+/// Encode a key event as the bytes a terminal program expects.
+///
+/// Alt-modified keys use the standard xterm "meta sends escape" encoding: the
+/// key's unmodified bytes prefixed with ESC.
 fn key_to_bytes(key: &KeyEvent) -> Vec<u8> {
+    let mut bytes = unmodified_key_to_bytes(key);
+    if key.modifiers.contains(KeyModifiers::ALT) && !bytes.is_empty() {
+        bytes.insert(0, 0x1b);
+    }
+    bytes
+}
+
+fn unmodified_key_to_bytes(key: &KeyEvent) -> Vec<u8> {
     match key.code {
         KeyCode::Enter => b"\r".to_vec(),
         KeyCode::Tab => b"\t".to_vec(),
@@ -549,6 +563,35 @@ mod tests {
         assert_eq!(
             pressed(KeyCode::Char('é'), KeyModifiers::NONE),
             "é".as_bytes().to_vec()
+        );
+    }
+
+    #[test]
+    fn alt_keys_are_esc_prefixed() {
+        // xterm "meta sends escape": Alt+key = ESC + unmodified bytes.
+        assert_eq!(
+            pressed(KeyCode::Char('x'), KeyModifiers::ALT),
+            b"\x1bx".to_vec()
+        );
+        assert_eq!(
+            pressed(KeyCode::Enter, KeyModifiers::ALT),
+            b"\x1b\r".to_vec()
+        );
+        assert_eq!(
+            pressed(KeyCode::Backspace, KeyModifiers::ALT),
+            b"\x1b\x7f".to_vec()
+        );
+        assert_eq!(
+            pressed(KeyCode::Up, KeyModifiers::ALT),
+            b"\x1b\x1b[A".to_vec()
+        );
+        // Alt composes with Ctrl: ESC + the control byte.
+        assert_eq!(
+            pressed(
+                KeyCode::Char('c'),
+                KeyModifiers::ALT | KeyModifiers::CONTROL
+            ),
+            b"\x1b\x03".to_vec()
         );
     }
 }
