@@ -17,26 +17,61 @@ use ratatui::{
 
 const SCROLLBACK_SIZE: usize = 1200;
 
+/// Window-title channel shared between a pane's reader thread (the vt100
+/// OSC callbacks) and the UI thread (`Pane::sync_title`).
+///
+/// `set` publishes a title and flags it dirty; `take_if_changed` consumes
+/// the flag and hands the title over only when it changed. The `Relaxed`
+/// flag is only a "worth locking" hint — the title itself lives in the
+/// mutex, whose unlock/lock pair carries the happens-before, so no update
+/// is lost. Keeping the atomic outside the mutex keeps the nothing-changed
+/// case lock-free on the per-frame sync path. `None` from `take_if_changed`
+/// means "unchanged"; titles cannot be cleared (both setters only publish
+/// `Some`).
+///
+/// `set` runs inside vt100 callbacks, i.e. while the reader thread holds
+/// the pane's `vpty` mutex: it must only take its own lock, never the
+/// parser's. Locks are poison-tolerant (as in `render_pane`) so a panic
+/// elsewhere cannot kill the reader thread and silently freeze the pane.
+#[derive(Clone, Default)]
+struct SharedTitle {
+    title: Arc<Mutex<Option<String>>>,
+    changed: Arc<AtomicBool>,
+}
+
+impl SharedTitle {
+    fn set(&self, title: String) {
+        *self.title.lock().unwrap_or_else(|e| e.into_inner()) = Some(title);
+        self.changed.store(true, Ordering::Relaxed);
+    }
+
+    fn set_from_bytes(&self, title: &[u8]) {
+        if let Ok(s) = std::str::from_utf8(title) {
+            self.set(s.to_string());
+        }
+    }
+
+    fn take_if_changed(&self) -> Option<String> {
+        self.changed
+            .swap(false, Ordering::Relaxed)
+            .then(|| self.title.lock().unwrap_or_else(|e| e.into_inner()).clone())
+            .flatten()
+    }
+}
+
 pub struct MuxCallbacks {
     writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
-    title: Arc<Mutex<Option<String>>>,
-    title_changed: Arc<AtomicBool>,
+    title: SharedTitle,
 }
 
 impl vt100::Callbacks for MuxCallbacks {
     fn set_window_title(&mut self, _screen: &mut vt100::Screen, title: &[u8]) {
-        if let Ok(s) = std::str::from_utf8(title) {
-            *self.title.lock().unwrap() = Some(s.to_string());
-            self.title_changed.store(true, Ordering::Relaxed);
-        }
+        self.title.set_from_bytes(title);
     }
 
     fn set_window_icon_name(&mut self, _screen: &mut vt100::Screen, icon_name: &[u8]) {
         // treat OSC 1 the same as OSC 2 if you want icon-name-only tools to count
-        if let Ok(s) = std::str::from_utf8(icon_name) {
-            *self.title.lock().unwrap() = Some(s.to_string());
-            self.title_changed.store(true, Ordering::Relaxed);
-        }
+        self.title.set_from_bytes(icon_name);
     }
     fn unhandled_csi(
         &mut self,
@@ -86,8 +121,7 @@ pub struct Pane {
     rows: u16,
     cols: u16,
     pub title: String,
-    title_shared: Arc<Mutex<Option<String>>>,
-    title_changed: Arc<AtomicBool>,
+    title_shared: SharedTitle,
 }
 
 impl Pane {
@@ -106,13 +140,11 @@ impl Pane {
         let _child = pair.slave.spawn_command(cmd)?;
         drop(pair.slave);
         let pty_writer = Arc::new(Mutex::new(Some(pair.master.take_writer()?)));
-        let title_shared = Arc::new(Mutex::new(None));
-        let title_changed = Arc::new(AtomicBool::new(false));
+        let title_shared = SharedTitle::default();
 
         let callbacks = MuxCallbacks {
             writer: pty_writer.clone(),
             title: title_shared.clone(),
-            title_changed: title_changed.clone(),
         };
         let vpty = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
             row,
@@ -149,7 +181,6 @@ impl Pane {
             cols: coll,
             title: "~".to_string(),
             title_shared,
-            title_changed,
         })
     }
     /// Forward a key event to the pane's PTY as the bytes a real terminal
@@ -162,9 +193,7 @@ impl Pane {
     }
 
     pub fn sync_title(&mut self) -> bool {
-        if self.title_changed.swap(false, Ordering::Relaxed)
-            && let Some(t) = self.title_shared.lock().unwrap().clone()
-        {
+        if let Some(t) = self.title_shared.take_if_changed() {
             self.title = t;
             return true; // title actually changed, redraw tab bar etc.
         }
@@ -401,11 +430,19 @@ mod tests {
     }
 
     fn test_parser() -> (vt100::Parser<MuxCallbacks>, Arc<Mutex<Vec<u8>>>) {
+        let (parser, bytes, _title) = test_parser_with_title();
+        (parser, bytes)
+    }
+
+    fn test_parser_with_title() -> (
+        vt100::Parser<MuxCallbacks>,
+        Arc<Mutex<Vec<u8>>>,
+        SharedTitle,
+    ) {
         let bytes = Arc::new(Mutex::new(Vec::new()));
         let writer: Box<dyn Write + Send> = Box::new(TestWriter(Arc::clone(&bytes)));
         let writer = Arc::new(Mutex::new(Some(writer)));
-        let title_shared = Arc::new(Mutex::new(None));
-        let title_changed = Arc::new(AtomicBool::new(false));
+        let title = SharedTitle::default();
 
         let parser = vt100::Parser::new_with_callbacks(
             24,
@@ -413,11 +450,10 @@ mod tests {
             SCROLLBACK_SIZE,
             MuxCallbacks {
                 writer: Arc::clone(&writer),
-                title_changed,
-                title: title_shared,
+                title: title.clone(),
             },
         );
-        (parser, bytes)
+        (parser, bytes, title)
     }
 
     #[test]
@@ -467,6 +503,45 @@ mod tests {
         let (mut parser, bytes) = test_parser();
         parser.process(b"\x1b[?5n");
         assert!(bytes.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn osc0_title_surfaces_as_single_change() {
+        let (mut parser, _bytes, title) = test_parser_with_title();
+        // OSC 0 fires both the icon-name and title callbacks with the same
+        // string; the channel must still report exactly one change.
+        parser.process(b"\x1b]0;my title\x07");
+        assert_eq!(title.take_if_changed().as_deref(), Some("my title"));
+        assert_eq!(title.take_if_changed(), None);
+    }
+
+    #[test]
+    fn osc2_title_updates() {
+        let (mut parser, _bytes, title) = test_parser_with_title();
+        parser.process(b"\x1b]2;other title\x07");
+        assert_eq!(title.take_if_changed().as_deref(), Some("other title"));
+    }
+
+    #[test]
+    fn osc1_icon_name_counts_as_title() {
+        let (mut parser, _bytes, title) = test_parser_with_title();
+        parser.process(b"\x1b]1;icon name\x07");
+        assert_eq!(title.take_if_changed().as_deref(), Some("icon name"));
+    }
+
+    #[test]
+    fn non_utf8_title_is_ignored() {
+        let (mut parser, _bytes, title) = test_parser_with_title();
+        parser.process(b"\x1b]2;\xff\xfe\x07");
+        assert_eq!(title.take_if_changed(), None);
+    }
+
+    #[test]
+    fn latest_title_wins_before_sync() {
+        let (mut parser, _bytes, title) = test_parser_with_title();
+        parser.process(b"\x1b]2;first\x07");
+        parser.process(b"\x1b]2;second\x07");
+        assert_eq!(title.take_if_changed().as_deref(), Some("second"));
     }
 
     fn pressed(code: KeyCode, modifiers: KeyModifiers) -> Vec<u8> {
