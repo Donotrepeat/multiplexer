@@ -7,7 +7,6 @@ use pane::Pane;
 use ratatui::{DefaultTerminal, Frame};
 
 use crossterm::terminal::size;
-use std::sync::atomic::Ordering;
 
 pub struct App {
     pub tabs: Vec<Tab>,
@@ -18,11 +17,7 @@ impl App {
     /// runs the application's main loop until the user quits
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         while self.running {
-            let any_changed = self
-                .get_tab()
-                .panes
-                .iter()
-                .any(|p| p.screen_changed.swap(false, Ordering::Relaxed));
+            let any_changed = self.get_tab().panes.iter().any(|p| p.take_screen_changed());
             let timeout = if any_changed {
                 std::time::Duration::ZERO
             } else {
@@ -102,11 +97,7 @@ impl App {
                 }
             }
             Command::NewPane => {
-                let (rows, cols) = {
-                    let tab = self.get_tab();
-                    let size = tab.panes[tab.active].pty_master.get_size().unwrap();
-                    (size.rows, size.cols)
-                };
+                let (rows, cols) = self.active_pane().size();
                 let new_rows = (rows / (self.get_tab().panes.len() as u16 + 1)).max(2);
                 let new_cols = cols.max(2);
                 let new_pane = Pane::new(new_rows, new_cols)?;

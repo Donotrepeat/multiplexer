@@ -17,22 +17,6 @@ use ratatui::{
 
 const SCROLLBACK_SIZE: usize = 1200;
 
-/// Window-title channel shared between a pane's reader thread (the vt100
-/// OSC callbacks) and the UI thread (`Pane::sync_title`).
-///
-/// `set` publishes a title and flags it dirty; `take_if_changed` consumes
-/// the flag and hands the title over only when it changed. The `Relaxed`
-/// flag is only a "worth locking" hint — the title itself lives in the
-/// mutex, whose unlock/lock pair carries the happens-before, so no update
-/// is lost. Keeping the atomic outside the mutex keeps the nothing-changed
-/// case lock-free on the per-frame sync path. `None` from `take_if_changed`
-/// means "unchanged"; titles cannot be cleared (both setters only publish
-/// `Some`).
-///
-/// `set` runs inside vt100 callbacks, i.e. while the reader thread holds
-/// the pane's `vpty` mutex: it must only take its own lock, never the
-/// parser's. Locks are poison-tolerant (as in `render_pane`) so a panic
-/// elsewhere cannot kill the reader thread and silently freeze the pane.
 #[derive(Clone, Default)]
 struct SharedTitle {
     title: Arc<Mutex<Option<String>>>,
@@ -59,7 +43,7 @@ impl SharedTitle {
     }
 }
 
-pub struct MuxCallbacks {
+struct MuxCallbacks {
     writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
     title: SharedTitle,
 }
@@ -104,33 +88,52 @@ impl vt100::Callbacks for MuxCallbacks {
             _ => None,
         };
         if let Some(bytes) = reply
-            && let Some(w) = self.writer.lock().unwrap().as_mut()
+            && let Some(w) = self
+                .writer
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_mut()
         {
             let _ = w.write_all(&bytes);
         }
     }
 }
 
-pub struct Pane {
-    pub vpty: Arc<Mutex<vt100::Parser<MuxCallbacks>>>,
-    pty_writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
-    pub pty_master: Box<dyn MasterPty>,
-    pub screen_changed: Arc<AtomicBool>,
-    // Scroll position tracking
-    // Last size this pane's virtual terminal was set to
-    rows: u16,
-    cols: u16,
-    pub title: String,
-    title_shared: SharedTitle,
+fn read_loop(
+    vpty: &Mutex<vt100::Parser<MuxCallbacks>>,
+    screen_changed: &AtomicBool,
+    mut reader: impl Read,
+) {
+    let mut buf = [0u8; 4096];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                vpty.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .process(&buf[..n]);
+                screen_changed.store(true, Ordering::Relaxed);
+            }
+            Err(_) => break,
+        }
+    }
 }
 
-impl Pane {
-    pub fn new(row: u16, coll: u16) -> Result<Self> {
-        let pty_system = native_pty_system();
+struct PtySession {
+    vpty: Arc<Mutex<vt100::Parser<MuxCallbacks>>>,
+    writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
+    master: Box<dyn MasterPty>,
+    screen_changed: Arc<AtomicBool>,
+    title: SharedTitle,
+    rows: u16,
+    cols: u16,
+}
 
-        let pair = pty_system.openpty(PtySize {
-            rows: row,
-            cols: coll,
+impl PtySession {
+    fn spawn(rows: u16, cols: u16) -> Result<Self> {
+        let pair = native_pty_system().openpty(PtySize {
+            rows,
+            cols,
             pixel_width: 0,
             pixel_height: 0,
         })?;
@@ -139,78 +142,153 @@ impl Pane {
         let cmd = CommandBuilder::new(shell);
         let _child = pair.slave.spawn_command(cmd)?;
         drop(pair.slave);
-        let pty_writer = Arc::new(Mutex::new(Some(pair.master.take_writer()?)));
-        let title_shared = SharedTitle::default();
 
-        let callbacks = MuxCallbacks {
-            writer: pty_writer.clone(),
-            title: title_shared.clone(),
-        };
+        let writer = Arc::new(Mutex::new(Some(pair.master.take_writer()?)));
+        let title = SharedTitle::default();
         let vpty = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
-            row,
-            coll,
+            rows,
+            cols,
             SCROLLBACK_SIZE,
-            callbacks,
+            MuxCallbacks {
+                writer: Arc::clone(&writer),
+                title: title.clone(),
+            },
         )));
-        let vpt_clone = Arc::clone(&vpty);
-
         let screen_changed = Arc::new(AtomicBool::new(true));
+        let vpt_clone = Arc::clone(&vpty);
         let sc_clone = Arc::clone(&screen_changed);
 
-        let mut reader = pair.master.try_clone_reader()?;
-        let _reader_thread = std::thread::spawn(move || {
-            let mut buf = [0u8; 4096];
-            loop {
-                match reader.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        vpt_clone.lock().unwrap().process(&buf[..n]);
-                        sc_clone.store(true, Ordering::Relaxed);
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
+        let reader = pair.master.try_clone_reader()?;
+        let _reader_thread = std::thread::spawn(move || read_loop(&vpt_clone, &sc_clone, reader));
 
-        Ok(Pane {
+        Ok(PtySession {
             vpty,
-            pty_writer,
-            pty_master: pair.master,
+            writer,
+            master: pair.master,
             screen_changed,
-            rows: row,
-            cols: coll,
+            title,
+            rows,
+            cols,
+        })
+    }
+
+    fn write_bytes(&self, bytes: &[u8]) -> Result<()> {
+        if let Some(w) = self
+            .writer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+        {
+            w.write_all(bytes)?;
+        }
+        Ok(())
+    }
+
+    fn take_screen_changed(&self) -> bool {
+        self.screen_changed.swap(false, Ordering::Relaxed)
+    }
+
+    fn take_title(&self) -> Option<String> {
+        self.title.take_if_changed()
+    }
+
+    fn size(&self) -> (u16, u16) {
+        (self.rows, self.cols)
+    }
+
+    /// Resize the backing PTY and the vt100 screen so both stay in sync.
+    /// Skips the work (and avoids a spurious SIGWINCH on the shell) when the
+    /// requested size is unchanged.
+    fn resize(&mut self, rows: u16, cols: u16) {
+        let rows = rows.max(1);
+        let cols = cols.max(1);
+        if rows == self.rows && cols == self.cols {
+            return;
+        }
+        self.rows = rows;
+        self.cols = cols;
+        self.master
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        self.vpty
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .screen_mut()
+            .set_size(rows, cols);
+    }
+
+    fn scroll_offset(&self) -> usize {
+        self.vpty
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .screen()
+            .scrollback()
+    }
+
+    fn set_scroll_offset(&self, offset: usize) {
+        self.vpty
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .screen_mut()
+            .set_scrollback(offset);
+        log::debug!("offset {offset}");
+    }
+
+    fn screen(&self) -> vt100::Screen {
+        self.vpty
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .screen()
+            .clone()
+    }
+}
+
+pub struct Pane {
+    session: PtySession,
+    pub title: String,
+}
+
+impl Pane {
+    pub fn new(rows: u16, cols: u16) -> Result<Self> {
+        Ok(Pane {
+            session: PtySession::spawn(rows, cols)?,
             title: "~".to_string(),
-            title_shared,
         })
     }
     /// Forward a key event to the pane's PTY as the bytes a real terminal
     /// would send for it. No-op if the writer is gone (child exited).
     pub fn write_key(&mut self, key: KeyEvent) -> Result<()> {
-        if let Some(w) = self.pty_writer.lock().unwrap().as_mut() {
-            w.write_all(&key_to_bytes(&key))?;
-        }
-        Ok(())
+        self.session.write_bytes(&key_to_bytes(&key))
     }
 
     pub fn sync_title(&mut self) -> bool {
-        if let Some(t) = self.title_shared.take_if_changed() {
+        if let Some(t) = self.session.take_title() {
             self.title = t;
             return true; // title actually changed, redraw tab bar etc.
         }
 
         false
     }
-    // Set scroll position using vt100 parser
-    pub fn set_scroll_offset(&mut self, offset: usize) {
-        let mut parser = self.vpty.lock().unwrap();
-        parser.screen_mut().set_scrollback(offset);
-        log::debug!("offset {offset}");
+
+    pub fn take_screen_changed(&self) -> bool {
+        self.session.take_screen_changed()
     }
 
-    // Get current scroll offset from vt100 parser
+    pub fn size(&self) -> (u16, u16) {
+        self.session.size()
+    }
+
+    pub fn set_scroll_offset(&mut self, offset: usize) {
+        self.session.set_scroll_offset(offset);
+    }
+
     pub fn get_scroll_offset(&self) -> usize {
-        let parser = self.vpty.lock().unwrap();
-        parser.screen().scrollback()
+        self.session.scroll_offset()
     }
 
     // Scroll up by lines (increase scrollback offset to show older content)
@@ -227,48 +305,27 @@ impl Pane {
         let new_offset = current.saturating_sub(lines);
         self.set_scroll_offset(new_offset);
     }
-    // Scroll to top (offset = 0)
+    // Scroll to top of scrollback (maximum offset)
     pub fn scroll_to_top(&mut self) {
         self.set_scroll_offset(usize::MAX);
     }
 
-    // Scroll to bottom (offset = max scrollback)
+    // Scroll to bottom (offset = 0, most recent output)
     pub fn scroll_to_bottom(&mut self) {
         self.set_scroll_offset(0);
     }
 
     // Get number of visible lines (this pane's current virtual terminal height)
     pub fn visible_lines(&self) -> usize {
-        self.rows as usize
+        self.session.size().0 as usize
     }
 
-    /// Resize the backing PTY and the vt100 screen so both stay in sync.
-    /// Skips the work (and avoids a spurious SIGWINCH on the shell) when the
-    /// requested size is unchanged.
     pub fn resize(&mut self, rows: u16, cols: u16) {
-        let rows = rows.max(1);
-        let cols = cols.max(1);
-        if rows == self.rows && cols == self.cols {
-            return;
-        }
-        self.rows = rows;
-        self.cols = cols;
-        self.pty_master
-            .resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .unwrap();
-        self.vpty.lock().unwrap().screen_mut().set_size(rows, cols);
+        self.session.resize(rows, cols);
     }
 
     pub fn render_pane(&self, frame: &mut Frame, area: Rect, is_active: bool) {
-        let screen = {
-            let parser = self.vpty.lock().unwrap_or_else(|e| e.into_inner());
-            parser.screen().clone()
-        };
+        let screen = self.session.screen();
         let (screen_rows, _cols) = screen.size();
         let inner = area.inner(Margin {
             horizontal: 1,
@@ -456,6 +513,26 @@ mod tests {
         (parser, bytes, title)
     }
 
+    fn session_wiring() -> (
+        Arc<Mutex<vt100::Parser<MuxCallbacks>>>,
+        Arc<AtomicBool>,
+        SharedTitle,
+    ) {
+        let title = SharedTitle::default();
+        let writer: Box<dyn Write + Send> = Box::new(TestWriter(Arc::new(Mutex::new(Vec::new()))));
+        let vpty = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
+            24,
+            80,
+            SCROLLBACK_SIZE,
+            MuxCallbacks {
+                writer: Arc::new(Mutex::new(Some(writer))),
+                title: title.clone(),
+            },
+        )));
+        let screen_changed = Arc::new(AtomicBool::new(false));
+        (vpty, screen_changed, title)
+    }
+
     #[test]
     fn da1_replies_vt220() {
         let (mut parser, bytes) = test_parser();
@@ -542,6 +619,40 @@ mod tests {
         parser.process(b"\x1b]2;first\x07");
         parser.process(b"\x1b]2;second\x07");
         assert_eq!(title.take_if_changed().as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn read_loop_publishes_title_and_flags_screen() {
+        let (vpty, screen_changed, title) = session_wiring();
+        read_loop(
+            &vpty,
+            &screen_changed,
+            std::io::Cursor::new(b"\x1b]2;hi\x07".to_vec()),
+        );
+        assert_eq!(title.take_if_changed().as_deref(), Some("hi"));
+        assert!(screen_changed.swap(false, Ordering::Relaxed));
+    }
+
+    #[test]
+    fn read_loop_output_lands_in_screen_and_sets_flag() {
+        let (vpty, screen_changed, _title) = session_wiring();
+        read_loop(
+            &vpty,
+            &screen_changed,
+            std::io::Cursor::new(b"hello".to_vec()),
+        );
+        assert_eq!(
+            vpty.lock().unwrap().screen().rows(0, 80).next(),
+            Some("hello".to_string())
+        );
+        assert!(screen_changed.swap(false, Ordering::Relaxed));
+    }
+
+    #[test]
+    fn read_loop_eof_leaves_flag_clear() {
+        let (vpty, screen_changed, _title) = session_wiring();
+        read_loop(&vpty, &screen_changed, std::io::Cursor::new(Vec::new()));
+        assert!(!screen_changed.swap(false, Ordering::Relaxed));
     }
 
     fn pressed(code: KeyCode, modifiers: KeyModifiers) -> Vec<u8> {
