@@ -28,6 +28,17 @@ pub struct Tab {
     pub grid: Grid,
 }
 
+/// Index of the pane that should be active after removing `active` from a tab
+/// that currently holds `len` panes. `len` is the pre-removal count.
+fn active_after_removal(active: usize, len: usize) -> usize {
+    let remaining = len.saturating_sub(1);
+    if active >= remaining {
+        remaining.saturating_sub(1)
+    } else {
+        active
+    }
+}
+
 impl Tab {
     pub fn new(row: u16, coll: u16) -> Result<Self> {
         log::debug!("screen {row},{coll}");
@@ -164,13 +175,13 @@ impl Tab {
     }
 
     pub fn del_pane(&mut self) {
-        let new_active = if self.active == self.panes.len() - 1 {
-            self.active - 1
-        } else {
-            self.active
-        };
-
-        self.panes.remove(self.active);
+        if self.panes.is_empty() {
+            return;
+        }
+        debug_assert!(self.active < self.panes.len(), "active pane out of bounds");
+        let removed = self.active;
+        let new_active = active_after_removal(self.active, self.panes.len());
+        self.panes.remove(removed);
         self.active = new_active;
     }
 }
@@ -345,5 +356,53 @@ mod tests {
                 assert!(r.right() <= AREA.right() && r.bottom() <= AREA.bottom());
             }
         }
+    }
+
+    #[test]
+    fn active_after_removal_is_in_bounds() {
+        let cases = [
+            (1usize, 0usize, 0usize),
+            (2, 0, 0),
+            (2, 1, 0),
+            (3, 0, 0),
+            (3, 1, 1),
+            (3, 2, 1),
+            (4, 3, 2),
+        ];
+        for (len, active, expected) in cases {
+            let got = active_after_removal(active, len);
+            assert_eq!(got, expected, "len={len} active={active}");
+            assert!(
+                got < len.saturating_sub(1).max(1),
+                "len={len} active={active} -> {got} out of bounds"
+            );
+        }
+    }
+
+    #[test]
+    fn del_pane_never_underflows_and_keeps_active_in_bounds() -> Result<()> {
+        // Deleting the only pane empties the tab without panicking.
+        let mut single = Tab::new(4, 20)?;
+        single.del_pane();
+        assert!(single.panes.is_empty());
+        assert_eq!(single.active, 0);
+
+        let mut tab = Tab::new(4, 20)?;
+        tab.panes.push(Pane::new(4, 20)?);
+        tab.panes.push(Pane::new(4, 20)?);
+
+        // Deleting a middle pane keeps the same index.
+        tab.active = 1;
+        tab.del_pane();
+        assert_eq!(tab.panes.len(), 2);
+        assert_eq!(tab.active, 1);
+
+        // Deleting the last pane moves the index back one.
+        tab.active = 1;
+        tab.del_pane();
+        assert_eq!(tab.panes.len(), 1);
+        assert_eq!(tab.active, 0);
+
+        Ok(())
     }
 }
