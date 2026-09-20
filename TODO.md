@@ -11,36 +11,6 @@ Each item lists: what's wrong → why it's a problem → where → suggested fix
 ---
 
 ## Milestone A — Correctness bugs & wiring
-
-### A1. `ScrollPageUp` scrolls one line instead of a page
-
-- **What:** `ScrollPageUp` computes `visible` (the pane's height) but then calls `scroll_up(1)`.
-- **Why:** PageUp is unusably slow on any real scrollback; `ScrollPageDown` already pages correctly, so the two keys behave inconsistently.
-- **Where:** `src/app/application.rs:114-118` (`Command::ScrollPageUp` arm).
-- **Suggested fix:** call `scroll_up(visible)`; drop the leftover `log::debug!("visible {visible}")` (and the stray `log::debug!("{new_offset} new offset")` in `Pane::scroll_up` while touching this code).
-- **Acceptance:** PageUp jumps a full pane height per press, matching PageDown's step size.
-
-### A2. `del_pane` underflows when deleting the last pane of a tab
-
-- **What:** when the tab has exactly one pane (`active == 0`, `len == 1`), the branch `self.active == self.panes.len() - 1` takes `self.active - 1` on a `usize` zero.
-- **Why:** debug builds panic (Alt+R on a fresh tab); release builds wrap to `usize::MAX`, masked only because the caller then removes the empty tab. CI runs tests in debug mode — this is one untested keypress away from a crash.
-- **Where:** `src/app/tabs.rs:166-175` (`Tab::del_pane`).
-- **Suggested fix:** remove and clamp: `self.panes.remove(self.active); self.active = self.active.min(self.panes.len().saturating_sub(1));`
-- **Acceptance + tests:** unit tests for deleting the only pane, a middle pane, and the last pane of a multi-pane tab — no panic, `active` stays in bounds.
-
-### A3. Child exit is undetected and unreaped
-
-- **What:** `PtySession::spawn` drops the spawned child (`let _child = …`), and when the reader thread hits EOF it just exits; nothing records that the pane's process died.
-- **Why:** a pane whose shell exited looks alive forever; the user types into a dead PTY with no feedback. The child is never `wait()`ed, so it lingers as a zombie until the multiplexer quits.
-- **Where:** `src/app/pane.rs:141-143` (child dropped), `src/app/pane.rs:102-120` (`read_loop` EOF paths), `src/app/application.rs:72-91` (`DeletePane`).
-- **Suggested fix:**
-  - Keep the `Box<dyn Child + Send + Sync>` in `PtySession`.
-  - Add an `exited: Arc<AtomicBool>`; `read_loop` sets it (plus `screen_changed`, so a redraw happens) on EOF or read error.
-  - `PtySession::is_alive()` → `!exited.load()`; `Pane::is_alive()` forwards.
-  - Mark the dead pane: prefix its title with `[exited] ` once (guard against re-prefixing each frame) in `Pane::sync_title`.
-  - Reap in `Drop for PtySession`: `let _ = self.child.kill(); let _ = self.child.wait();` so every path (pane delete, tab close, app quit) cleans up.
-- **Acceptance:** run `exit` in a pane → title becomes `[exited] …`, app keeps running; quit the app → `ps` shows no leftover/zombie shell processes.
-
 ### A4. Scroll keys are stolen from terminal applications
 
 - **What:** `SCROLL_BINDINGS` (Home/End/PageUp/PageDown) always resolve to mux scroll commands "regardless of modifiers", before anything else.

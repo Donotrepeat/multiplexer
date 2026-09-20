@@ -18,7 +18,8 @@ impl App {
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         while self.running {
             let any_changed = self.get_tab().panes.iter().any(|p| p.take_screen_changed());
-            let timeout = if any_changed {
+            let any_exited = self.get_tab().panes.iter().any(|p| p.is_not_alive());
+            let timeout = if any_changed || any_exited {
                 std::time::Duration::ZERO
             } else {
                 std::time::Duration::from_millis(16)
@@ -113,8 +114,7 @@ impl App {
             }
             Command::ScrollPageUp => {
                 let visible = self.active_pane().visible_lines();
-                log::debug!("visible {visible}");
-                self.active_pane_mut().scroll_up(1);
+                self.active_pane_mut().scroll_up(visible);
             }
             Command::ScrollPageDown => {
                 let visible = self.active_pane().visible_lines();

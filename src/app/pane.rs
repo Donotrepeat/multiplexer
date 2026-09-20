@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
+use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use ratatui::prelude::Position;
 use ratatui::style::Stylize;
 use ratatui::{
@@ -102,19 +102,26 @@ impl vt100::Callbacks for MuxCallbacks {
 fn read_loop(
     vpty: &Mutex<vt100::Parser<MuxCallbacks>>,
     screen_changed: &AtomicBool,
+    exited: &AtomicBool,
     mut reader: impl Read,
 ) {
     let mut buf = [0u8; 4096];
     loop {
         match reader.read(&mut buf) {
-            Ok(0) => break,
+            Ok(0) => {
+                exited.store(false, Ordering::Relaxed);
+                break;
+            }
             Ok(n) => {
                 vpty.lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .process(&buf[..n]);
                 screen_changed.store(true, Ordering::Relaxed);
             }
-            Err(_) => break,
+            Err(_) => {
+                exited.store(false, Ordering::Relaxed);
+                break;
+            }
         }
     }
 }
@@ -123,7 +130,9 @@ struct PtySession {
     vpty: Arc<Mutex<vt100::Parser<MuxCallbacks>>>,
     writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
     master: Box<dyn MasterPty>,
+    child: Box<dyn Child + Send + Sync>,
     screen_changed: Arc<AtomicBool>,
+    exited: Arc<AtomicBool>,
     title: SharedTitle,
     rows: u16,
     cols: u16,
@@ -140,7 +149,7 @@ impl PtySession {
 
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into());
         let cmd = CommandBuilder::new(shell);
-        let _child = pair.slave.spawn_command(cmd)?;
+        let child = pair.slave.spawn_command(cmd)?;
         drop(pair.slave);
 
         let writer = Arc::new(Mutex::new(Some(pair.master.take_writer()?)));
@@ -159,13 +168,18 @@ impl PtySession {
         let sc_clone = Arc::clone(&screen_changed);
 
         let reader = pair.master.try_clone_reader()?;
-        let _reader_thread = std::thread::spawn(move || read_loop(&vpt_clone, &sc_clone, reader));
+        let exited = Arc::new(AtomicBool::new(false));
+        let ex_clone = Arc::clone(&exited);
+        let _reader_thread =
+            std::thread::spawn(move || read_loop(&vpt_clone, &sc_clone, &ex_clone, reader));
 
         Ok(PtySession {
             vpty,
             writer,
             master: pair.master,
+            child,
             screen_changed,
+            exited,
             title,
             rows,
             cols,
@@ -173,6 +187,9 @@ impl PtySession {
     }
 
     fn write_bytes(&self, bytes: &[u8]) -> Result<()> {
+        if self.is_not_alive() {
+            return Ok(());
+        }
         if let Some(w) = self
             .writer
             .lock()
@@ -186,6 +203,10 @@ impl PtySession {
 
     fn take_screen_changed(&self) -> bool {
         self.screen_changed.swap(false, Ordering::Relaxed)
+    }
+
+    fn is_not_alive(&self) -> bool {
+        self.exited.load(Ordering::Relaxed)
     }
 
     fn take_title(&self) -> Option<String> {
@@ -268,7 +289,11 @@ impl Pane {
 
     pub fn sync_title(&mut self) -> bool {
         if let Some(t) = self.session.take_title() {
-            self.title = t;
+            if self.is_not_alive() && !self.title.starts_with("[exited]") {
+                self.title = format!("[exited] {}", self.title);
+            } else {
+                self.title = t;
+            }
             return true; // title actually changed, redraw tab bar etc.
         }
 
@@ -277,6 +302,9 @@ impl Pane {
 
     pub fn take_screen_changed(&self) -> bool {
         self.session.take_screen_changed()
+    }
+    pub fn is_not_alive(&self) -> bool {
+        self.session.is_not_alive()
     }
 
     pub fn size(&self) -> (u16, u16) {
@@ -295,7 +323,6 @@ impl Pane {
     pub fn scroll_up(&mut self, lines: usize) {
         let current = self.get_scroll_offset();
         let new_offset = current.saturating_add(lines);
-        log::debug!("{new_offset} new offset");
         self.set_scroll_offset(new_offset);
     }
 
@@ -347,6 +374,13 @@ impl Pane {
                 frame.set_cursor_position(Position::new(x, inner.y + view_row as u16));
             }
         }
+    }
+}
+
+impl Drop for PtySession {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 /// Encode a key event as the bytes a terminal program expects.
@@ -516,6 +550,7 @@ mod tests {
     fn session_wiring() -> (
         Arc<Mutex<vt100::Parser<MuxCallbacks>>>,
         Arc<AtomicBool>,
+        Arc<AtomicBool>,
         SharedTitle,
     ) {
         let title = SharedTitle::default();
@@ -530,7 +565,8 @@ mod tests {
             },
         )));
         let screen_changed = Arc::new(AtomicBool::new(false));
-        (vpty, screen_changed, title)
+        let exited = Arc::new(AtomicBool::new(false));
+        (vpty, screen_changed, exited, title)
     }
 
     #[test]
@@ -623,10 +659,11 @@ mod tests {
 
     #[test]
     fn read_loop_publishes_title_and_flags_screen() {
-        let (vpty, screen_changed, title) = session_wiring();
+        let (vpty, screen_changed, exited, title) = session_wiring();
         read_loop(
             &vpty,
             &screen_changed,
+            &exited,
             std::io::Cursor::new(b"\x1b]2;hi\x07".to_vec()),
         );
         assert_eq!(title.take_if_changed().as_deref(), Some("hi"));
@@ -635,10 +672,11 @@ mod tests {
 
     #[test]
     fn read_loop_output_lands_in_screen_and_sets_flag() {
-        let (vpty, screen_changed, _title) = session_wiring();
+        let (vpty, screen_changed, exited, _title) = session_wiring();
         read_loop(
             &vpty,
             &screen_changed,
+            &exited,
             std::io::Cursor::new(b"hello".to_vec()),
         );
         assert_eq!(
@@ -650,8 +688,13 @@ mod tests {
 
     #[test]
     fn read_loop_eof_leaves_flag_clear() {
-        let (vpty, screen_changed, _title) = session_wiring();
-        read_loop(&vpty, &screen_changed, std::io::Cursor::new(Vec::new()));
+        let (vpty, screen_changed, exited, _title) = session_wiring();
+        read_loop(
+            &vpty,
+            &screen_changed,
+            &exited,
+            std::io::Cursor::new(Vec::new()),
+        );
         assert!(!screen_changed.swap(false, Ordering::Relaxed));
     }
 
