@@ -42,14 +42,16 @@ const SCROLL_BINDINGS: &[(KeyCode, Command)] = &[
 ///
 /// Multiplexer hotkeys (Alt+letter) win first, then scroll keys; anything
 /// else is forwarded to the active pane.
-pub fn resolve(key: KeyEvent) -> Command {
+pub fn resolve(key: KeyEvent, alternate: bool) -> Command {
     if key.modifiers.contains(KeyModifiers::ALT)
         && let KeyCode::Char(c) = key.code
         && let Some((_, command)) = ALT_BINDINGS.iter().find(|(ch, _)| *ch == c)
     {
         return *command;
     }
-    if let Some((_, command)) = SCROLL_BINDINGS.iter().find(|(code, _)| *code == key.code) {
+    if let Some((_, command)) = SCROLL_BINDINGS.iter().find(|(code, _)| *code == key.code)
+        && !alternate
+    {
         return *command;
     }
     Command::SendKey(key)
@@ -77,7 +79,7 @@ mod tests {
         ];
         for (c, expected) in cases {
             assert_eq!(
-                resolve(key(KeyCode::Char(c), KeyModifiers::ALT)),
+                resolve(key(KeyCode::Char(c), KeyModifiers::ALT), false),
                 expected,
                 "Alt+{c}"
             );
@@ -87,10 +89,10 @@ mod tests {
     #[test]
     fn alt_with_extra_modifiers_still_matches() {
         assert_eq!(
-            resolve(key(
-                KeyCode::Char('w'),
-                KeyModifiers::ALT | KeyModifiers::SHIFT
-            )),
+            resolve(
+                key(KeyCode::Char('w'), KeyModifiers::ALT | KeyModifiers::SHIFT),
+                false
+            ),
             Command::Quit
         );
     }
@@ -98,13 +100,13 @@ mod tests {
     #[test]
     fn plain_letter_is_sent_to_pane() {
         let k = key(KeyCode::Char('w'), KeyModifiers::NONE);
-        assert_eq!(resolve(k), Command::SendKey(k));
+        assert_eq!(resolve(k, false), Command::SendKey(k));
     }
 
     #[test]
     fn unbound_alt_letter_falls_through_to_pane() {
         let k = key(KeyCode::Char('x'), KeyModifiers::ALT);
-        assert_eq!(resolve(k), Command::SendKey(k));
+        assert_eq!(resolve(k, false), Command::SendKey(k));
     }
 
     #[test]
@@ -116,9 +118,13 @@ mod tests {
             (KeyCode::PageDown, Command::ScrollPageDown),
         ];
         for (code, expected) in cases {
-            assert_eq!(resolve(key(code, KeyModifiers::NONE)), expected, "{code:?}");
             assert_eq!(
-                resolve(key(code, KeyModifiers::ALT)),
+                resolve(key(code, KeyModifiers::NONE), false),
+                expected,
+                "{code:?}"
+            );
+            assert_eq!(
+                resolve(key(code, KeyModifiers::ALT), false),
                 expected,
                 "Alt+{code:?}"
             );

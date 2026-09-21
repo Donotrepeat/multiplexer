@@ -11,16 +11,6 @@ Each item lists: what's wrong → why it's a problem → where → suggested fix
 ---
 
 ## Milestone A — Correctness bugs & wiring
-### A4. Scroll keys are stolen from terminal applications
-
-- **What:** `SCROLL_BINDINGS` (Home/End/PageUp/PageDown) always resolve to mux scroll commands "regardless of modifiers", before anything else.
-- **Why:** full-screen programs (`vim`, `less`, `htop`) legitimately use these keys; inside the multiplexer they never receive them, so paging in `less` or Home/End in `vim` silently scrolls the pane instead.
-- **Where:** `src/app/command.rs:33-56` (`SCROLL_BINDINGS`, `resolve`), caller `src/app/application.rs:35-42`.
-- **Suggested fix — smart routing by screen state:**
-  - `vt100::Screen::alternate_screen()` is public; add `PtySession::in_alternate_screen()` (lock, read, no clone needed) and `Pane::in_alternate_screen()`.
-  - Change `resolve` to take a context, e.g. `resolve(key, in_alternate_screen: bool)`: scroll keys in the primary screen → mux scroll (current behavior); in an alternate screen → fall through to `SendKey(key)` so the pane's app handles them.
-- **Acceptance + tests:** `less` in a pane: PageUp/PageDown page the document, not the mux scrollback. Unit tests in `command.rs` for both routes; a `pane.rs` test feeding `\x1b[?1049h` / `\x1b[?1049l` asserting the flag flips.
-- **Note:** A5 is load-bearing here — once these keys forward, their byte encodings must exist.
 
 ### A5. Key encoding ignores modifiers and common keys
 

@@ -37,7 +37,8 @@ impl App {
         if crossterm::event::poll(timeout)?
             && let crossterm::event::Event::Key(key) = crossterm::event::read()?
         {
-            self.execute(command::resolve(key))?;
+            let is_alternate = self.active_pane().in_alternated_state();
+            self.execute(command::resolve(key, is_alternate))?;
         }
         Ok(())
     }

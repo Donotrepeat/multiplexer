@@ -139,6 +139,10 @@ struct PtySession {
 }
 
 impl PtySession {
+    fn in_alternate_screen(&self) -> bool {
+        self.vpty.lock().unwrap().screen().alternate_screen()
+    }
+
     fn spawn(rows: u16, cols: u16) -> Result<Self> {
         let pair = native_pty_system().openpty(PtySize {
             rows,
@@ -298,6 +302,10 @@ impl Pane {
         }
 
         false
+    }
+
+    pub fn in_alternated_state(&self) -> bool {
+        self.session.in_alternate_screen()
     }
 
     pub fn take_screen_changed(&self) -> bool {
