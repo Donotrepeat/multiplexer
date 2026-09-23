@@ -10,21 +10,6 @@ Each item lists: what's wrong → why it's a problem → where → suggested fix
 
 ---
 
-## Milestone A — Correctness bugs & wiring
-
-### A5. Key encoding ignores modifiers and common keys
-
-- **What:** `key_to_bytes` handles Enter/Tab/Backspace/Esc/arrows/Delete and plain/Ctrl/Alt chars, but: Home, End, PageUp, PageDown, Insert, and F1-F12 have no encodings, and modifiers on navigation keys are dropped (Ctrl+Left sends plain `\x1b[D`).
-- **Why:** apps that bind these keys (word-jump in shells/vim, `less` paging once A4 lands) misbehave. Also, Alt on CSI keys currently uses the "meta sends escape" prefix (`\x1b\x1b[A`); xterm's modifier-parameter form (`\x1b[1;3A`) is what apps actually parse.
-- **Where:** `src/app/pane.rs:356-399` (`key_to_bytes`, `unmodified_key_to_bytes`).
-- **Suggested fix:**
-  - Add unmodified encodings: Home → `\x1b[H`, End → `\x1b[F`, PageUp → `\x1b[5~`, PageDown → `\x1b[6~`, Insert → `\x1b[2~`, F1-F4 → `\x1bOP`…`\x1bOS`, F5-F12 → `\x1b[15~`, `\x1b[17~`…`\x1b[24~` (13-14 unused), Shift+Tab → `\x1b[Z`.
-  - Modifier parameter `m = 1 + shift + 2·alt + 4·ctrl`: arrows/Home/End → `\x1b[1;{m}{A..H}`, `~`-keys → `\x1b[{n};{m}~`. Replace the ESC-prefix for Alt on CSI keys with this (keep ESC-prefix for plain chars — "meta sends escape" is what shells expect).
-  - Keep the Alt+Ctrl composition: both fold into `m`.
-- **Acceptance + tests:** table-driven tests covering every new key × {none, Shift, Ctrl, Alt, Ctrl+Shift}; update `alt_keys_are_esc_prefixed` expectations for CSI keys. Manual: Ctrl+arrows word-jump in the shell, Shift+arrows select in `vim`.
-
----
-
 ## Milestone B — Tab bar UI
 
 ### B1. Tabs are invisible
