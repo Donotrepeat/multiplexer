@@ -12,17 +12,6 @@ Each item lists: what's wrong → why it's a problem → where → suggested fix
 
 ## Milestone B — Tab bar UI
 
-### B1. Tabs are invisible
-
-- **What:** `App` supports multiple tabs (NewTab/NextTab/PrevTab), but `draw` renders only the active tab — there is no tab bar, so users can't see how many tabs exist or which is active.
-- **Why:** invisible state is undiscoverable state; `NewTab` also reserves horizontal space (`term_cols - 4`) for a bar that never renders, shrinking every initial pane for no reason.
-- **Where:** `src/app/application.rs:150-152` (`App::draw`), `src/app/tabs.rs:139` (`Tab::draw_tab`).
-- **Suggested fix:**
-  - In `App::draw`: `Layout::vertical([Length(1), Min(0)])` → bar area + content area.
-  - Render the bar from per-tab titles: a tab's title is its active pane's title (already synced from OSC 0/1/2). Numbered entries (`1:title  2:title …`), active tab highlighted (bold + cyan, matching the pane title style); truncate long titles so `N` tabs always fit one row.
-  - `draw_tab(&mut self, frame, area: Rect)` takes the content rect instead of `frame.area()`.
-- **Acceptance:** with 3 tabs, all three titles are visible, the active one is highlighted; adding/switching tabs updates the bar; pane content no longer overlaps the bar.
-
 ### B2. Duplicated, lossy initial-size math
 
 - **What:** `main.rs` and `Command::NewTab` both compute `Tab::new(term_rows - 2, term_cols - 4)`; on a tiny terminal `term_rows - 2` / `term_cols - 4` underflow and panic, and `-4` has no justification.

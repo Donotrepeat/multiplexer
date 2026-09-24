@@ -4,6 +4,9 @@ use crate::app::tabs::Tab;
 use anyhow::{Ok, Result};
 use crossterm::event::KeyEvent;
 use pane::Pane;
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::{DefaultTerminal, Frame};
 
 use crossterm::terminal::size;
@@ -149,6 +152,33 @@ impl App {
         &mut tab.panes[tab.active]
     }
     fn draw(&mut self, frame: &mut Frame) {
-        self.tabs[self.active_tab].draw_tab(frame);
+        let areas =
+            Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(frame.area());
+        let bar_area = areas[0];
+        let content_area = areas[1];
+        self.draw_bar(frame, bar_area);
+
+        self.tabs[self.active_tab].draw_tab(frame, content_area);
+    }
+
+    fn draw_bar(&mut self, frame: &mut Frame, area: Rect) {
+        let spans: Vec<Span> = self
+            .tabs
+            .iter()
+            .enumerate()
+            .map(|(i, tab)| {
+                let label = format!("{}:{}  ", i + 1, tab.panes[tab.active].title);
+                let style = if i == self.active_tab {
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                Span::styled(label, style)
+            })
+            .collect();
+
+        frame.render_widget(Line::from(spans), area);
     }
 }

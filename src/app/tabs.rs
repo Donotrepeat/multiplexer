@@ -1,5 +1,5 @@
 use crate::app::pane::Pane;
-use ratatui::{Frame, layout::Rect};
+use ratatui::{layout::Rect, Frame};
 use strum::{EnumIter, IntoEnumIterator};
 
 use anyhow::Result;
@@ -147,12 +147,11 @@ impl Tab {
         regions
     }
 
-    pub fn draw_tab(&mut self, frame: &mut Frame) {
+    pub fn draw_tab(&mut self, frame: &mut Frame, area: Rect) {
         let total_panes = self.panes.len() as u16;
         if total_panes == 0 {
             return;
         }
-        let area = frame.area();
         let rects = match self.grid {
             Grid::Vertical => Self::vertical_rects(area, total_panes),
             Grid::Square => Self::grid_rects(area, total_panes),
