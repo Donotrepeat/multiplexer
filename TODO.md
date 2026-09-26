@@ -6,7 +6,7 @@ Each item lists: what's wrong → why it's a problem → where → suggested fix
 
 **Tooling state (verified 2026-09-13):** `cargo test` — 35/35 green. `cargo clippy --all-targets` — clean. CI (`.github/workflows/ci.yml`) — `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`, all green.
 
-**History:** the previous TODO (code-quality findings) was fully resolved and pruned in `190a0e6`. This plan is the next round: correctness fixes, tab bar UI, and clipboard + polish. Future-work items that are deliberately deferred are listed at the bottom.
+**History:** the previous TODO (code-quality findings) was fully resolved and pruned in `190a0e6`. This plan is the next round: correctness fixes, tab bar UI, clipboard + polish, and concurrency/architecture (Milestone E, added 2026-09-26). Future-work items that are deliberately deferred are listed at the bottom.
 
 ---
 
@@ -98,6 +98,92 @@ Each item lists: what's wrong → why it's a problem → where → suggested fix
 
 ---
 
+## Milestone E — Concurrency & architecture
+
+Ranked in landing order: E1 unblocks every exit feature; E2/E3 are correctness + safety; E4 is the structural core the rest hang off; E5–E10 build on it.
+
+### E1. `exited` flag is inverted — panes never appear dead
+
+- **What:** `read_loop` stores `false` into the `exited` atomic on EOF and on read error, so `is_not_alive()` is always `false` and a pane whose child died keeps looking alive.
+- **Why:** every exit feature is dead code — the `[exited]` title prefix in `sync_title` can never fire, and the `write_bytes` early-return guard never triggers, so writing to a dead PTY tries (and errors) instead of no-op'ing. This is also the *only* signal of child exit, so nothing downstream can ever react to a pane dying.
+- **Where:** `src/app/pane.rs` (`read_loop` lines 112 and 122; `is_not_alive` 212-214; `sync_title` 294-305).
+- **Suggested fix:** store `true` on EOF/error. Second half: `sync_title` only runs when a *new* OSC title arrives, so a dying process that emits no title leaves `take_title()` `None` and `[exited]` still never shows — give exit its own "changed" signal (or fold it into the E4 event stream).
+- **Acceptance:** `exit` in a pane sets `[exited]` without an intervening OSC title; the existing `read_loop_eof_leaves_flag_clear` test is updated to assert the corrected behaviour.
+
+### E2. Resize & title sync happen only inside `draw`
+
+- **What:** `draw_tab` is the only caller of `pane.resize(...)` and `pane.sync_title()`, and `App::draw` draws only the active tab.
+- **Why:** a render pass is performing model mutation, so background tabs never get resized on a terminal resize (their shell sees a stale size / no SIGWINCH until you switch to them) and their titles go stale (see B3).
+- **Where:** `src/app/tabs.rs` (`draw_tab`, 150-174), `src/app/application.rs` (`draw`, 154-162).
+- **Suggested fix:** move resize + sync into an explicit update pass (e.g. `App::update_all()`) that walks every tab and every pane, called on each loop iteration or on resize events; `draw_tab` becomes read-only. Land together with B3.
+- **Acceptance:** resize the terminal while a background tab is running a pager; switching to it shows the correct size immediately.
+
+### E3. Undocumented parser→writer lock order (deadlock hazard)
+
+- **What:** `MuxCallbacks::unhandled_csi` locks the PTY writer while already holding the parser mutex (it runs inside `process()`). This is safe only because no path locks parser-after-writer.
+- **Why:** an invisible, undocumented invariant that is one accidental `writer.lock()` + `vpty.lock()` away from a deadlock.
+- **Where:** `src/app/pane.rs` (`unhandled_csi`, 90-98; `read_loop` calls `process` at 116-118).
+- **Suggested fix:** buffer the reply bytes locally inside `unhandled_csi` and flush to the writer *after* `process()` returns and the parser lock is released; at minimum document the rule ("the parser lock may acquire the writer lock; never the reverse").
+- **Acceptance:** no write to the writer occurs while the parser lock is held; a comment states the lock-order rule.
+
+### E4. Replace the 16ms poll with an event channel
+
+- **What:** `App::run` polls all panes of the *active tab only* every iteration; `screen_changed`/`exited`/title are bare atomics with no wakeup power, and output from background tabs doesn't even shorten the poll.
+- **Why:** ~16ms output latency; background-tab changes are invisible to the loop; three ad-hoc flags where one typed message would do.
+- **Where:** `src/app/application.rs` (`run`, 21-37; `handle_events`, 39-47), `src/app/pane.rs` (atomics).
+- **Suggested fix:** give the app one `mpsc` channel; each reader thread gets a `Sender` and emits `PaneEvent::Output | Exited | Title(..)` instead of flipping flags. Loop does `recv_timeout(~16ms)` + a zero-timeout `poll` for keys; draw only when something changed. Use a bounded/`sync_channel` with a "coalesce old Output" strategy (Output is a boolean "dirty", not a count). This folds E1's exit signal and B3/E2's title propagation into one mechanism.
+- **Acceptance:** a background tab emitting output wakes the loop (observable via faster bar/title update); output no longer gated on the active tab.
+
+### E5. `screen()` clones the whole vt100 screen every frame
+
+- **What:** `render_pane` calls `session.screen()`, which clones the full `vt100::Screen` (`SCROLLBACK_SIZE` = 1200 rows) under the lock every frame, for every pane.
+- **Why:** real O(pane-count × 1200 rows) cost at 60fps; grows with panes and starves the reader thread's lock.
+- **Where:** `src/app/pane.rs` (`screen`, 267-273; `render_pane`, 362-385).
+- **Suggested fix:** clone only when `take_screen_changed()` was set, caching the snapshot between dirty frames. (Deeper: double-buffer the snapshot on the reader thread and publish via E4 — defer until the channel lands.)
+- **Acceptance:** idle frames do no `Screen` clone; rendering still correct.
+
+### E6. `Option<Box<dyn Write + Send>>` is never `None`
+
+- **What:** the writer is `Arc<Mutex<Option<Box<dyn Write + Send>>>>`, but nothing ever sets it to `None`, so every `if let Some(w) = ...as_mut()` branch is dead.
+- **Why:** the `Option` + `dyn Write` exist only to inject `TestWriter` in tests, yet leak into production hot paths (`write_bytes`, `unhandled_csi`).
+- **Where:** `src/app/pane.rs` (46-49, 131, 197-205).
+- **Suggested fix:** a `PtyWriter: Write + Send` trait or generic, or at minimum drop the `Option` and keep `Box<dyn Write + Send>`; the test shim lives behind the trait bound.
+- **Acceptance:** `write_bytes` has no `Option` unwrap; tests still inject a writer.
+
+### E7. Children reaped and threads detached on the UI thread
+
+- **What:** `Drop for PtySession` does `kill()` + `wait()` synchronously on whatever thread drops it (the UI thread), and the reader thread's `JoinHandle` is discarded at spawn.
+- **Why:** `wait()` can stall a frame (uninterruptible sleep); the reader thread outlives the session and holds `Arc`s (parser, flags) until the master fd closes.
+- **Where:** `src/app/pane.rs` (spawn, 177-178; `Drop`, 388-393).
+- **Suggested fix:** a small reaper that `wait()`s exited children and emits `PaneEvent::Exited` (E4), and store the reader `JoinHandle` so shutdown can join deterministically.
+- **Acceptance:** teardown is explicit; no `wait()` on the UI thread; no detached thread.
+
+### E8. `pane.rs` bundles four concerns (~1000 lines)
+
+- **What:** PTY lifecycle, the vt100↔ratatui bridge, key→byte encoding, and `MuxCallbacks` all in one file with almost no shared state.
+- **Why:** makes the lock-order invariant (E3) hard to see and each piece hard to test in isolation.
+- **Where:** `src/app/pane.rs`.
+- **Suggested fix:** split into `session.rs` / `render.rs` / `keys.rs` (or `keys/` + `term/`).
+- **Acceptance:** modules compile; `cargo test` green with tests co-located per module.
+
+### E9. Poisoned locks recovered silently
+
+- **What:** every `.lock().unwrap_or_else(|e| e.into_inner())` continues as if nothing happened.
+- **Why:** right default (the UI shouldn't hang because one pane panicked), but the panic is invisible — a reader-thread crash is only noticed as a frozen pane.
+- **Where:** throughout `src/app/pane.rs`.
+- **Suggested fix:** log the poison (via the buffered logger) before recovering, so crashes are observable in the dump.
+- **Acceptance:** a poisoned parser lock produces a log line, not silence.
+
+### E10. Small cleanups
+
+- **What:** (a) `sync_title` returns a `bool` every caller ignores (`tabs.rs:170`); (b) `draw_bar` reads the pane's `String` copy while a `SharedTitle` already holds the canonical value (`application.rs:170`); (c) `App::run` calls `terminal.draw` unconditionally every loop even on idle frames (`application.rs:34`).
+- **Why:** dead return value; two title stores; redundant redraw.
+- **Where:** as above.
+- **Suggested fix:** drop the return value (or use it to dirty only the bar); make the bar read `SharedTitle` (or the E4 event); draw only when changed.
+- **Acceptance:** single source of truth for titles; no unconditional draw.
+
+---
+
 ## Verification
 
 After every item, and once more per milestone:
@@ -114,6 +200,7 @@ Manual checklist per milestone:
 - **B:** tab bar shows titles and highlights the active tab; Alt+C/Alt+E/Alt+Q cycle visibly; terminal shrunk to tiny size doesn't panic.
 - **C:** Alt+V pastes; multi-line paste at a zsh prompt is editable, not executed; repo contains no Python files; `PLAN.md` gone.
 - **D:** Shift+Tab works inside a pane's TUI form; Alt+R on the last pane of the last tab quits cleanly in a debug build.
+- **E:** `exit` in a pane shows `[exited]`; resize propagates to background tabs; background output wakes the loop without that pane being active; no `wait()` on the UI thread.
 
 ## Future work (deliberately out of scope)
 
