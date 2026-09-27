@@ -12,13 +12,6 @@ Each item lists: what's wrong → why it's a problem → where → suggested fix
 
 ## Milestone B — Tab bar UI
 
-### B2. Duplicated, lossy initial-size math
-
-- **What:** `main.rs` and `Command::NewTab` both compute `Tab::new(term_rows - 2, term_cols - 4)`; on a tiny terminal `term_rows - 2` / `term_cols - 4` underflow and panic, and `-4` has no justification.
-- **Why:** duplicated logic drifts (B1 changes the right answer again); underflow turns a small window into a crash.
-- **Where:** `src/main.rs:36-40`, `src/app/application.rs:47-55`.
-- **Suggested fix:** one helper (e.g. `fn initial_pane_size() -> (u16, u16)`) using `saturating_sub`: reserve 2 rows for pane borders + 1 for the new tab bar, 2 cols for borders. Both call sites use it. Exactness doesn't matter — `draw_tab` resizes every pane to its real rect each frame — but the first spawn should be close to avoid a resize storm.
-- **Acceptance:** resizing the terminal to a few rows/cols and pressing Alt+C no longer panics.
 
 ### B3. Background tab titles in the bar go stale
 
@@ -52,13 +45,7 @@ Each item lists: what's wrong → why it's a problem → where → suggested fix
   - Bracketed paste: `vt100::Screen::bracketed_paste()` already tracks `\x1b[?2004h/l` — when the pane's shell enabled the mode, wrap the payload in `\x1b[200~` … `\x1b[201~` and normalize newlines to `\r`, so multi-line pastes edit instead of execute in zsh/bash. Unwrapped otherwise.
 - **Acceptance + tests:** unit tests for the wrapping decision (mode on/off) and newline normalization; manual: paste a multi-line command at a zsh prompt → it appears as editable text, not instant execution.
 
-### C2. Stray Python files from an unrelated project
 
-- **What:** `src/models/user.py`, `src/utils/auth.py`, `src/utils/database.py`, `tests/test_auth.py` were committed in `96a6ca5` ("started todo"); they are a Flask-style user/auth scaffold with no relation to this Rust project.
-- **Why:** they confuse every code search and make the repo look like it hosts two projects; nothing in the crate references them.
-- **Where:** the four files above.
-- **Suggested fix:** `git rm -r src/models src/utils tests/test_auth.py` (the `tests/` directory then disappears; Rust tests live inline under `src/`). Optionally align CI's clippy invocation with the local baseline (`cargo clippy --all-targets -- -D warnings`) in `.github/workflows/ci.yml`.
-- **Acceptance:** `git grep -l "\.py"` returns nothing; `cargo test` still green.
 
 ### C3. Outdated `PLAN.md`
 
@@ -79,14 +66,6 @@ Each item lists: what's wrong → why it's a problem → where → suggested fix
 - **Where:** `src/app/pane.rs` (`csi_key_to_bytes`, commit `f7089f1`).
 - **Suggested fix:** add `KeyCode::BackTab => Some(b"\x1b[Z".to_vec())` to `csi_key_to_bytes`; add a `BackTab` test case.
 - **Acceptance:** unit test asserting `BackTab` encodes to `\x1b[Z`; manual: Shift+Tab moves to the previous field in a TUI form inside a pane.
-
-### D2. `in_alternate_screen` breaks the poisoned-lock pattern
-
-- **What:** the new helper locks the parser with `.unwrap()` while every other `vpty` lock in `pane.rs` uses `.unwrap_or_else(|e| e.into_inner())`.
-- **Why:** it's on the keypress hot path (`handle_events` calls it for every key); if the reader thread ever panics while holding the parser lock, the UI thread now panics on every subsequent keypress instead of degrading the way the rest of the file is written to.
-- **Where:** `src/app/pane.rs` (`PtySession::in_alternate_screen`, commit `7166290`).
-- **Suggested fix:** use the same `unwrap_or_else(|e| e.into_inner())` pattern.
-- **Acceptance:** no bare `.lock().unwrap()` on `vpty` remains in `pane.rs`.
 
 ### D3. `Command::DeletePane` underflows when the last tab dies (pre-existing)
 

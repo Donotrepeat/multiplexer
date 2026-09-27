@@ -109,7 +109,7 @@ fn read_loop(
     loop {
         match reader.read(&mut buf) {
             Ok(0) => {
-                exited.store(false, Ordering::Relaxed);
+                exited.store(true, Ordering::Relaxed);
                 break;
             }
             Ok(n) => {
@@ -119,7 +119,7 @@ fn read_loop(
                 screen_changed.store(true, Ordering::Relaxed);
             }
             Err(_) => {
-                exited.store(false, Ordering::Relaxed);
+                exited.store(true, Ordering::Relaxed);
                 break;
             }
         }
@@ -140,7 +140,11 @@ struct PtySession {
 
 impl PtySession {
     fn in_alternate_screen(&self) -> bool {
-        self.vpty.lock().unwrap().screen().alternate_screen()
+        self.vpty
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .screen()
+            .alternate_screen()
     }
 
     fn spawn(rows: u16, cols: u16) -> Result<Self> {
@@ -390,6 +394,12 @@ impl Drop for PtySession {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+pub fn initize_pane_size(row: u16, col: u16) -> (u16, u16) {
+    let pane_rows = row.saturating_sub(2);
+    let pane_cols = col.saturating_sub(2);
+    (pane_rows, pane_cols)
 }
 
 fn key_to_bytes(key: &KeyEvent) -> Vec<u8> {

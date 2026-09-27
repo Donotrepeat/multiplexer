@@ -1,5 +1,5 @@
 use crate::app::command::{self, Command};
-use crate::app::pane;
+use crate::app::pane::{self, initize_pane_size};
 use crate::app::tabs::Tab;
 use anyhow::{Ok, Result};
 use crossterm::event::KeyEvent;
@@ -53,8 +53,9 @@ impl App {
                 let (term_cols, term_rows) = size()?;
                 let term_rows = term_rows.max(1);
                 let term_cols = term_cols.max(1);
+                let (rows, cols) = initize_pane_size(term_rows, term_cols);
 
-                self.tabs.push(Tab::new(term_rows - 2, term_cols - 4)?);
+                self.tabs.push(Tab::new(rows, cols)?);
 
                 self.active_tab = self.tabs.len() - 1;
             }

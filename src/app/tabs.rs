@@ -164,8 +164,8 @@ impl Tab {
         for (i, pane) in self.panes.iter_mut().enumerate() {
             if let Some(&rect) = rects.get(i) {
                 pane.resize(
-                    rect.height.saturating_sub(2).max(1),
-                    rect.width.saturating_sub(2).max(1),
+                    rect.height.saturating_sub(2).max(2),
+                    rect.width.saturating_sub(2).max(2),
                 );
                 pane.sync_title();
                 pane.render_pane(frame, rect, self.active == i);
