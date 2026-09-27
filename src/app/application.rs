@@ -1,9 +1,9 @@
 use crate::app::command::{self, Command};
-use crate::app::pane::{self, initize_pane_size};
+use crate::app::pane::Pane;
 use crate::app::tabs::Tab;
+use crate::app::util::initialize_pane_size;
 use anyhow::{Ok, Result};
 use crossterm::event::KeyEvent;
-use pane::Pane;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -53,7 +53,7 @@ impl App {
                 let (term_cols, term_rows) = size()?;
                 let term_rows = term_rows.max(1);
                 let term_cols = term_cols.max(1);
-                let (rows, cols) = initize_pane_size(term_rows, term_cols);
+                let (rows, cols) = initialize_pane_size(term_rows, term_cols);
 
                 self.tabs.push(Tab::new(rows, cols)?);
 

@@ -7,7 +7,7 @@ mod logging;
 
 use app::application::App;
 
-use crate::app::{pane::initize_pane_size, tabs};
+use crate::app::{tabs, util::initialize_pane_size};
 
 fn set_terminal_title(title: &str) {
     print!("\x1B]0;{}\x07", title);
@@ -32,7 +32,7 @@ fn main() -> Result<()> {
     let (term_cols, term_rows) = size()?;
     let term_rows = term_rows.max(1);
     let term_cols = term_cols.max(1);
-    let (rows, cols) = initize_pane_size(term_rows, term_cols);
+    let (rows, cols) = initialize_pane_size(term_rows, term_cols);
     let mut app = App {
         tabs: vec![tabs::Tab::new(rows, cols)?],
         running: true,
