@@ -165,9 +165,10 @@ impl App {
     fn draw_bar(&mut self, frame: &mut Frame, area: Rect) {
         let spans: Vec<Span> = self
             .tabs
-            .iter()
+            .iter_mut()
             .enumerate()
             .map(|(i, tab)| {
+                tab.panes[tab.active].sync_title();
                 let label = format!("{}:{}  ", i + 1, tab.panes[tab.active].title);
                 let style = if i == self.active_tab {
                     Style::default()

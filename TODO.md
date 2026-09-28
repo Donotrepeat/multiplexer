@@ -11,16 +11,6 @@ Each item lists: what's wrong → why it's a problem → where → suggested fix
 ---
 
 ## Milestone B — Tab bar UI
-
-
-### B3. Background tab titles in the bar go stale
-
-- **What:** `draw_bar` renders `tab.panes[tab.active].title` for every tab, but `pane.title` is only refreshed by `sync_title()`, which runs inside `draw_tab` — and `App::draw` only draws the active tab.
-- **Why:** a background tab's process can change its title (shell prompt hook, vim OSC 0/2) while the bar keeps showing the title from when that tab was last active. The fresh value sits in the `SharedTitle` mutex already; it just never propagates to `pane.title` until the tab is drawn.
-- **Where:** `src/app/application.rs` (`draw`/`draw_bar`, commit `b3e5f80`), `src/app/pane.rs` (`sync_title`), `src/app/tabs.rs` (`draw_tab`).
-- **Suggested fix:** sync titles for all tabs in `App::draw` before rendering the bar (cheap — a changed-flag check per pane), or have `draw_bar` read the `SharedTitle` directly instead of the pane copy.
-- **Acceptance:** with two tabs, trigger a title change in the background tab (e.g. `cd` in a prompt-hook shell); the bar updates without switching to that tab.
-
 ### B4. Tab bar clips instead of fitting all tabs
 
 - **What:** `draw_bar` renders one long `Line` of `N:title  ` spans and lets ratatui clip it at the terminal width.
