@@ -8,6 +8,7 @@ pub(super) fn key_to_bytes(key: &KeyEvent) -> Vec<u8> {
     let mut bytes = match key.code {
         KeyCode::Enter => b"\r".to_vec(),
         KeyCode::Tab => b"\t".to_vec(),
+        KeyCode::BackTab => b"\x1b[Z".to_vec(),
         KeyCode::Backspace => b"\x7f".to_vec(),
         KeyCode::Esc => b"\x1b".to_vec(),
         KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -194,6 +195,7 @@ mod tests {
             (KeyCode::Enter, &b"\r"[..]),
             (KeyCode::Tab, b"\t"),
             (KeyCode::Backspace, b"\x7f"),
+            (KeyCode::BackTab, b"\x1b[Z"),
             (KeyCode::Esc, b"\x1b"),
             (KeyCode::Up, b"\x1b[A"),
             (KeyCode::Down, b"\x1b[B"),

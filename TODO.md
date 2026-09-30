@@ -36,17 +36,6 @@ Each item lists: what's wrong → why it's a problem → where → suggested fix
 - **Acceptance + tests:** unit tests for the wrapping decision (mode on/off) and newline normalization; manual: paste a multi-line command at a zsh prompt → it appears as editable text, not instant execution.
 
 
-
-### C3. Outdated `PLAN.md`
-
-- **What:** `PLAN.md` documents the original single-file, non-compiling design (steps 1-10); every step shipped long ago and the architecture it describes no longer exists.
-- **Why:** it misleads any agent or human doing repo orientation into fixing problems that are already fixed.
-- **Where:** `PLAN.md`.
-- **Suggested fix:** `git rm PLAN.md`. This file becomes the single living planning document.
-- **Acceptance:** gone from the repo root; this TODO is the planning source of truth.
-
----
-
 ## Milestone D — Key encoding & robustness (code review 2026-09-24)
 
 ### D1. Shift+Tab is swallowed (`BackTab` never encoded)
