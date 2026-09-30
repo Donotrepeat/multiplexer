@@ -38,14 +38,6 @@ Each item lists: what's wrong → why it's a problem → where → suggested fix
 
 ## Milestone D — Key encoding & robustness (code review 2026-09-24)
 
-### D1. Shift+Tab is swallowed (`BackTab` never encoded)
-
-- **What:** `csi_key_to_bytes` encodes Shift+Tab as `KeyCode::Tab` + `SHIFT` → `\x1b[Z`, but on Unix crossterm delivers a real Shift+Tab as `KeyCode::BackTab` (crossterm itself parses the terminal's `\x1b[Z`, see crossterm 0.29 `parse.rs`). `BackTab` matches no arm and falls through to `_ => Vec::new()`.
-- **Why:** `write_key` sends zero bytes to the pane: pressing Shift+Tab in any TUI form with field navigation does nothing. The `Tab`+`SHIFT` arm only fires under the kitty keyboard protocol, which isn't enabled. No test covers `BackTab`, which is why the suite stays green.
-- **Where:** `src/app/pane.rs` (`csi_key_to_bytes`, commit `f7089f1`).
-- **Suggested fix:** add `KeyCode::BackTab => Some(b"\x1b[Z".to_vec())` to `csi_key_to_bytes`; add a `BackTab` test case.
-- **Acceptance:** unit test asserting `BackTab` encodes to `\x1b[Z`; manual: Shift+Tab moves to the previous field in a TUI form inside a pane.
-
 ### D3. `Command::DeletePane` underflows when the last tab dies (pre-existing)
 
 - **What:** after removing the last tab, `let tab_count = self.tabs.len() - 1;` computes `0 - 1` on `usize`.
