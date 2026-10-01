@@ -84,7 +84,7 @@ impl App {
                 tab.del_pane();
                 if tab.panes.is_empty() {
                     self.tabs.remove(self.active_tab);
-                    let tab_count = self.tabs.len() - 1;
+                    let tab_count = self.tabs.len().saturating_sub(1);
                     if self.active_tab == 0 {
                         self.active_tab = tab_count;
                     } else {

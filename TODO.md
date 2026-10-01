@@ -36,29 +36,10 @@ Each item lists: what's wrong → why it's a problem → where → suggested fix
 - **Acceptance + tests:** unit tests for the wrapping decision (mode on/off) and newline normalization; manual: paste a multi-line command at a zsh prompt → it appears as editable text, not instant execution.
 
 
-## Milestone D — Key encoding & robustness (code review 2026-09-24)
-
-### D3. `Command::DeletePane` underflows when the last tab dies (pre-existing)
-
-- **What:** after removing the last tab, `let tab_count = self.tabs.len() - 1;` computes `0 - 1` on `usize`.
-- **Why:** debug builds panic (Alt+R on a single-pane, single-tab app); release builds wrap `active_tab` to `usize::MAX` and are saved only by the `running = false` check that follows. `NextTab`/`PrevTab` share the `len() - 1` pattern but can't reach it while running.
-- **Where:** `src/app/application.rs` (`Command::DeletePane`).
-- **Suggested fix:** guard the decrement with `saturating_sub(1)`, or restructure: remove the tab, then clamp `active_tab` behind an `is_empty` check.
-- **Acceptance:** Alt+R on the last pane of the last tab quits cleanly in a debug build; `cargo test` green.
-
----
 
 ## Milestone E — Concurrency & architecture
 
 Ranked in landing order: E1 unblocks every exit feature; E2/E3 are correctness + safety; E4 is the structural core the rest hang off; E5–E10 build on it.
-
-### E1. `exited` flag is inverted — panes never appear dead
-
-- **What:** `read_loop` stores `false` into the `exited` atomic on EOF and on read error, so `is_not_alive()` is always `false` and a pane whose child died keeps looking alive.
-- **Why:** every exit feature is dead code — the `[exited]` title prefix in `sync_title` can never fire, and the `write_bytes` early-return guard never triggers, so writing to a dead PTY tries (and errors) instead of no-op'ing. This is also the *only* signal of child exit, so nothing downstream can ever react to a pane dying.
-- **Where:** `src/app/pane.rs` (`read_loop` lines 112 and 122; `is_not_alive` 212-214; `sync_title` 294-305).
-- **Suggested fix:** store `true` on EOF/error. Second half: `sync_title` only runs when a *new* OSC title arrives, so a dying process that emits no title leaves `take_title()` `None` and `[exited]` still never shows — give exit its own "changed" signal (or fold it into the E4 event stream).
-- **Acceptance:** `exit` in a pane sets `[exited]` without an intervening OSC title; the existing `read_loop_eof_leaves_flag_clear` test is updated to assert the corrected behaviour.
 
 ### E2. Resize & title sync happen only inside `draw`
 
