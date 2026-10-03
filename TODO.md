@@ -21,22 +21,6 @@ Each item lists: what's wrong → why it's a problem → where → suggested fix
 
 ---
 
-## Milestone C — Clipboard & polish
-
-### C1. No paste support
-
-- **What:** there is no way to paste system-clipboard text into a pane.
-- **Why:** the single most-missed terminal feature; retyping long commands into a multiplexer is misery.
-- **Where:** new — `Cargo.toml`, `src/app/command.rs` (`ALT_BINDINGS`), `src/app/application.rs` (`execute`), `src/app/pane.rs` (write path).
-- **Suggested fix:**
-  - Add `arboard` (3.x) as a dependency; it's the standard Rust cross-platform clipboard (no system dev libraries needed on Linux).
-  - Bind `Alt+V` → `Command::Paste` (fits the existing Alt-letter scheme; `v` is free).
-  - `execute`: read `Clipboard::new()?.get_text()?`, forward to the active pane.
-  - Bracketed paste: `vt100::Screen::bracketed_paste()` already tracks `\x1b[?2004h/l` — when the pane's shell enabled the mode, wrap the payload in `\x1b[200~` … `\x1b[201~` and normalize newlines to `\r`, so multi-line pastes edit instead of execute in zsh/bash. Unwrapped otherwise.
-- **Acceptance + tests:** unit tests for the wrapping decision (mode on/off) and newline normalization; manual: paste a multi-line command at a zsh prompt → it appears as editable text, not instant execution.
-
-
-
 ## Milestone E — Concurrency & architecture
 
 Ranked in landing order: E1 unblocks every exit feature; E2/E3 are correctness + safety; E4 is the structural core the rest hang off; E5–E10 build on it.

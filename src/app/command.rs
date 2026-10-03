@@ -14,6 +14,7 @@ pub enum Command {
     ScrollToBottom,
     ScrollPageUp,
     ScrollPageDown,
+    Paste,
     /// Not a multiplexer hotkey: forward the key to the active pane's PTY.
     SendKey(KeyEvent),
 }
@@ -28,6 +29,7 @@ const ALT_BINDINGS: &[(char, Command)] = &[
     ('r', Command::DeletePane),
     ('n', Command::NextPane),
     ('t', Command::NewPane),
+    ('v', Command::Paste),
 ];
 
 /// Scroll keys, which fire regardless of modifiers.
@@ -76,6 +78,7 @@ mod tests {
             ('r', Command::DeletePane),
             ('n', Command::NextPane),
             ('t', Command::NewPane),
+            ('v', Command::Paste),
         ];
         for (c, expected) in cases {
             assert_eq!(

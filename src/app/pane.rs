@@ -32,6 +32,13 @@ impl Pane {
         self.session.write_bytes(&key_to_bytes(&key))
     }
 
+    /// Paste clipboard text into the pane's PTY. Framing follows the
+    /// foreground application's bracketed-paste mode; see
+    /// [`PtySession::paste`](session::PtySession::paste).
+    pub fn paste(&mut self, text: &str) -> Result<()> {
+        self.session.paste(text)
+    }
+
     pub fn sync_title(&mut self) -> bool {
         if let Some(t) = self.session.take_title() {
             if self.is_not_alive() && !self.title.starts_with("[exited]") {

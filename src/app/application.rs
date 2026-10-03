@@ -2,7 +2,8 @@ use crate::app::command::{self, Command};
 use crate::app::pane::Pane;
 use crate::app::tabs::Tab;
 use crate::app::util::initialize_pane_size;
-use anyhow::{Ok, Result};
+use anyhow::Result;
+use arboard::Clipboard;
 use crossterm::event::KeyEvent;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -100,6 +101,12 @@ impl App {
                     self.get_mut_tab().active = 0;
                 } else {
                     self.get_mut_tab().active += 1;
+                }
+            }
+            Command::Paste => {
+                match Clipboard::new().and_then(|mut clipboard| clipboard.get_text()) {
+                    Ok(text) => self.active_pane_mut().paste(&text)?,
+                    Err(err) => log::warn!("paste failed: {err}"),
                 }
             }
             Command::NewPane => {
