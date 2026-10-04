@@ -314,10 +314,15 @@ fn label_budgets(width: usize, n: usize) -> Vec<usize> {
 /// Truncate `s` to `budget` display columns, padding it with spaces so each
 /// tab occupies exactly its slot. Wide characters are never split: a glyph
 /// that would cross the boundary is dropped and the slot padded instead.
+/// Control characters (an OSC title can carry them) are dropped rather than
+/// rendered into the bar.
 fn fit_label(s: &str, budget: usize) -> String {
     let mut out = String::new();
     let mut used = 0;
     for c in s.chars() {
+        if c.is_control() {
+            continue;
+        }
         let width = c.width().unwrap_or(0);
         if used + width > budget {
             break;
@@ -348,6 +353,9 @@ mod tests {
         assert_eq!(fit_label("1:ab", 6), "1:ab  ");
         assert_eq!(fit_label("1:日本語", 6), "1:日本");
         assert_eq!(fit_label("1:日本語", 5), "1:日 ");
+        // A control character in an OSC title is dropped, not counted as a
+        // zero-width glyph that would render as garbage in the bar.
+        assert_eq!(fit_label("1:a\u{b}b", 5), "1:ab ");
     }
 
     #[test]

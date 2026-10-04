@@ -183,6 +183,9 @@ pub(super) struct PtySession {
     /// Signals the child to stop on teardown. The child itself lives in the
     /// reaper thread, which owns `wait()`.
     killer: Box<dyn ChildKiller + Send + Sync>,
+    /// Set by the reaper once `wait()` has returned: the child is gone and
+    /// its PID is free for reuse, so teardown must not signal it anymore.
+    reaped: Arc<AtomicBool>,
     reader_thread: Option<JoinHandle<()>>,
     reaper_thread: Option<JoinHandle<()>>,
     screen_changed: Arc<AtomicBool>,
@@ -235,12 +238,18 @@ impl PtySession {
         let reader_thread = std::thread::spawn(move || {
             read_loop(&vpt_clone, &writer_clone, &sc_clone, &reader_tx, id, reader)
         });
+        let reaped = Arc::new(AtomicBool::new(false));
+        let reaped_clone = Arc::clone(&reaped);
         let reaper_thread = std::thread::spawn(move || {
             // Reaps the child so no zombies remain, and reports the exit
             // even when a background grandchild keeps the pty slave open
             // (which would otherwise delay the reader's EOF indefinitely).
+            // The pane is closed from the user's perspective from this
+            // point on: a grandchild's output is still rendered, but input
+            // is no longer forwarded to it.
             let mut child = child;
             let _ = child.wait();
+            reaped_clone.store(true, Ordering::Release);
             let _ = tx.send(PaneEvent::Exited(id));
         });
 
@@ -249,6 +258,7 @@ impl PtySession {
             writer,
             master: pair.master,
             killer,
+            reaped,
             reader_thread: Some(reader_thread),
             reaper_thread: Some(reaper_thread),
             screen_changed,
@@ -356,13 +366,25 @@ fn join_with_timeout(handle: Option<JoinHandle<()>>, what: &str) {
     }
 }
 
+/// Signal the child to stop, unless the reaper has already waited on it.
+/// After `wait()` returns the child is gone and its PID is free for reuse,
+/// so a late `kill(pid)` could land on an unrelated process that inherited
+/// the ID. Errors are ignored: the child dying on its own is not a failure.
+fn kill_unless_reaped(killer: &mut dyn ChildKiller, reaped: bool) {
+    if reaped {
+        return;
+    }
+    let _ = killer.kill();
+}
+
 impl Drop for PtySession {
     fn drop(&mut self) {
         // The reaper owns the child and does the only `wait()`, off the UI
-        // thread. Killing first makes both background threads finish
+        // thread. Killing first — unless the child was already reaped, see
+        // `kill_unless_reaped` — makes both background threads finish
         // promptly; the bounded join keeps a child that ignores SIGHUP (or a
         // grandchild holding the pty slave open) from hanging the app.
-        let _ = self.killer.kill();
+        kill_unless_reaped(self.killer.as_mut(), self.reaped.load(Ordering::Acquire));
         join_with_timeout(self.reader_thread.take(), "pty reader");
         join_with_timeout(self.reaper_thread.take(), "pty reaper");
     }
@@ -383,6 +405,25 @@ mod tests {
 
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
+        }
+    }
+
+    /// Records `kill()` calls so teardown can be asserted without a real
+    /// child. `ChildKiller` requires `Debug`; `Downcast` and `Send` are
+    /// satisfied by any `'static` type via blanket impls.
+    #[derive(Debug, Default)]
+    struct KillRecorder {
+        kills: usize,
+    }
+
+    impl ChildKiller for KillRecorder {
+        fn kill(&mut self) -> std::io::Result<()> {
+            self.kills += 1;
+            Ok(())
+        }
+
+        fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
+            Box::new(KillRecorder { kills: self.kills })
         }
     }
 
@@ -639,6 +680,18 @@ mod tests {
         // The reply is buffered by the callbacks and only reaches the writer
         // through the post-`process` flush.
         assert!(vpty.lock().unwrap().callbacks_mut().take_reply().is_empty());
+    }
+
+    #[test]
+    fn teardown_does_not_signal_an_already_reaped_child() {
+        let mut killer = KillRecorder::default();
+        kill_unless_reaped(&mut killer, false);
+        kill_unless_reaped(&mut killer, false);
+        assert_eq!(killer.kills, 2);
+
+        // Once the reaper has waited, the PID may have been reused; no signal.
+        kill_unless_reaped(&mut killer, true);
+        assert_eq!(killer.kills, 2);
     }
 
     #[test]

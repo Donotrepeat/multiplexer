@@ -58,9 +58,12 @@ impl Pane {
     }
 
     /// Forward a key event to the pane's PTY as the bytes a real terminal
-    /// would send for it. No-op once the child has exited; a write failure
-    /// (the child died between the exit event and this write) is logged
-    /// rather than brought down as an app error.
+    /// would send for it. No-op once the child has exited — even if a
+    /// grandchild still holds the pty slave open and its output keeps
+    /// rendering, the foreground child is gone and the pane is closed from
+    /// the user's perspective. A write failure (the child died between the
+    /// exit event and this write) is logged rather than brought down as an
+    /// app error.
     pub fn write_key(&mut self, key: KeyEvent) -> Result<()> {
         if self.exited {
             return Ok(());
