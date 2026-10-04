@@ -36,20 +36,15 @@ impl Tab {
         })
     }
 
-    pub fn draw_tab(&mut self, frame: &mut Frame, area: Rect) {
-        let total_panes = self.panes.len() as u16;
-        if total_panes == 0 {
+    pub fn update(&mut self, area: Rect) {
+        if self.panes.is_empty() {
             return;
         }
-        let rects = match self.grid {
-            Grid::Vertical => grid::vertical_rects(area, total_panes),
-            Grid::Square => grid::grid_rects(area, total_panes),
-            Grid::Golden => grid::golden_rects(area, total_panes),
-            _ => grid::horizontal_rects(area, total_panes),
-        };
+        let rects = self.rects(area);
         // The single source of truth for pane sizing: every pane's virtual
         // terminal is resized to its renderable rect (the block border takes
-        // one cell on each side) before it is drawn.
+        // one cell on each side). Running this for every tab — not just the
+        // visible one — keeps background shells' sizes and SIGWINCH current.
         for (i, pane) in self.panes.iter_mut().enumerate() {
             if let Some(&rect) = rects.get(i) {
                 pane.resize(
@@ -57,8 +52,30 @@ impl Tab {
                     rect.width.saturating_sub(2).max(2),
                 );
                 pane.sync_title();
+            }
+        }
+    }
+
+    pub fn draw_tab(&mut self, frame: &mut Frame, area: Rect) {
+        if self.panes.is_empty() {
+            return;
+        }
+        let rects = self.rects(area);
+        for (i, pane) in self.panes.iter_mut().enumerate() {
+            if let Some(&rect) = rects.get(i) {
                 pane.render_pane(frame, rect, self.active == i);
             }
+        }
+    }
+
+    /// Screen rectangles for each pane under the tab's current grid.
+    fn rects(&self, area: Rect) -> Vec<Rect> {
+        let total_panes = self.panes.len() as u16;
+        match self.grid {
+            Grid::Vertical => grid::vertical_rects(area, total_panes),
+            Grid::Square => grid::grid_rects(area, total_panes),
+            Grid::Golden => grid::golden_rects(area, total_panes),
+            _ => grid::horizontal_rects(area, total_panes),
         }
     }
 
@@ -77,6 +94,26 @@ impl Tab {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_resizes_every_pane_to_its_cell() -> Result<()> {
+        let mut tab = Tab::new(4, 20)?;
+        tab.panes.push(Pane::new(4, 20)?);
+        tab.panes.push(Pane::new(4, 20)?);
+
+        let area = Rect::new(0, 1, 41, 10);
+        tab.update(area);
+
+        let rects = grid::horizontal_rects(area, tab.panes.len() as u16);
+        for (pane, rect) in tab.panes.iter().zip(rects) {
+            let expected = (
+                rect.height.saturating_sub(2).max(2),
+                rect.width.saturating_sub(2).max(2),
+            );
+            assert_eq!(pane.size(), expected);
+        }
+        Ok(())
+    }
 
     #[test]
     fn active_after_removal_is_in_bounds() {

@@ -33,7 +33,20 @@ impl App {
             if !self.running {
                 continue;
             }
+            self.update_all(terminal)?;
             terminal.draw(|frame| self.draw(frame))?;
+        }
+        Ok(())
+    }
+
+    /// Push the current layout into every pane of every tab, not just the
+    /// visible one, so background shells see resizes and title changes
+    /// immediately. Drawing stays read-only.
+    fn update_all(&mut self, terminal: &DefaultTerminal) -> Result<()> {
+        let size = terminal.size()?;
+        let (_, content_area) = split_areas(Rect::new(0, 0, size.width, size.height));
+        for tab in &mut self.tabs {
+            tab.update(content_area);
         }
         Ok(())
     }
@@ -161,24 +174,20 @@ impl App {
         &mut tab.panes[tab.active]
     }
     fn draw(&mut self, frame: &mut Frame) {
-        let areas =
-            Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(frame.area());
-        let bar_area = areas[0];
-        let content_area = areas[1];
+        let (bar_area, content_area) = split_areas(frame.area());
         self.draw_bar(frame, bar_area);
 
         self.tabs[self.active_tab].draw_tab(frame, content_area);
     }
 
-    fn draw_bar(&mut self, frame: &mut Frame, area: Rect) {
+    fn draw_bar(&self, frame: &mut Frame, area: Rect) {
         let budgets = label_budgets(area.width as usize, self.tabs.len());
         let spans: Vec<Span> = self
             .tabs
-            .iter_mut()
+            .iter()
             .zip(budgets)
             .enumerate()
             .map(|(i, (tab, budget))| {
-                tab.panes[tab.active].sync_title();
                 let label = format!("{}:{}", i + 1, tab.panes[tab.active].title);
                 let style = if i == self.active_tab {
                     Style::default()
@@ -193,6 +202,12 @@ impl App {
 
         frame.render_widget(Line::from(spans), area);
     }
+}
+
+/// Split the screen into the one-row tab bar and the content area below it.
+fn split_areas(area: Rect) -> (Rect, Rect) {
+    let areas = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+    (areas[0], areas[1])
 }
 
 /// Split the bar's width evenly across `n` tabs. Earlier tabs absorb the
