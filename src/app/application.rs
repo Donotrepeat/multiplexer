@@ -1,14 +1,17 @@
 use crate::app::command::{self, Command};
+use crate::app::events::{PaneEvent, PaneId};
 use crate::app::pane::Pane;
 use crate::app::tabs::Tab;
 use crate::app::util::initialize_pane_size;
 use anyhow::Result;
 use arboard::Clipboard;
-use crossterm::event::KeyEvent;
+use crossterm::event::{Event, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::{DefaultTerminal, Frame};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::time::Duration;
 use unicode_width::UnicodeWidthChar;
 
 use crossterm::terminal::size;
@@ -17,26 +20,114 @@ pub struct App {
     pub tabs: Vec<Tab>,
     pub running: bool,
     pub active_tab: usize,
+    /// Panes send `PaneEvent`s here from their background threads.
+    events_tx: Sender<PaneEvent>,
+    events_rx: Receiver<PaneEvent>,
+    next_pane_id: u64,
+    /// Whether the next loop iteration needs to redraw.
+    dirty: bool,
+    last_size: (u16, u16),
 }
+
 impl App {
+    pub fn new() -> Result<Self> {
+        let (events_tx, events_rx) = mpsc::channel();
+        let (term_cols, term_rows) = size()?;
+        let term_rows = term_rows.max(1);
+        let term_cols = term_cols.max(1);
+        let (rows, cols) = initialize_pane_size(term_rows, term_cols);
+
+        let mut app = App {
+            tabs: Vec::new(),
+            running: true,
+            active_tab: 0,
+            events_tx,
+            events_rx,
+            next_pane_id: 0,
+            dirty: true,
+            last_size: (term_cols, term_rows),
+        };
+        let id = app.next_pane_id();
+        let tx = app.events_tx.clone();
+        app.tabs.push(Tab::new(rows, cols, id, tx)?);
+        Ok(app)
+    }
+
     /// runs the application's main loop until the user quits
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         while self.running {
-            let any_changed = self.get_tab().panes.iter().any(|p| p.take_screen_changed());
-            let any_exited = self.get_tab().panes.iter().any(|p| p.is_not_alive());
-            let timeout = if any_changed || any_exited {
-                std::time::Duration::ZERO
-            } else {
-                std::time::Duration::from_millis(16)
-            };
-            self.handle_events(timeout)?;
+            self.pump()?;
             if !self.running {
-                continue;
+                break;
             }
             self.update_all(terminal)?;
-            terminal.draw(|frame| self.draw(frame))?;
+            if self.dirty {
+                terminal.draw(|frame| self.draw(frame))?;
+                self.dirty = false;
+            }
         }
         Ok(())
+    }
+
+    fn next_pane_id(&mut self) -> PaneId {
+        let id = PaneId(self.next_pane_id);
+        self.next_pane_id += 1;
+        id
+    }
+
+    /// Wait briefly for a pane event, then drain everything pending: pane
+    /// events first, then keys and terminal resizes. Output from background
+    /// tabs wakes the loop exactly like output from the active one.
+    fn pump(&mut self) -> Result<()> {
+        match self.events_rx.recv_timeout(Duration::from_millis(16)) {
+            Ok(event) => self.handle_pane_event(event),
+            Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => {}
+        }
+        while let Ok(event) = self.events_rx.try_recv() {
+            self.handle_pane_event(event);
+        }
+
+        while crossterm::event::poll(Duration::ZERO)? {
+            match crossterm::event::read()? {
+                Event::Key(key) => {
+                    let is_alternate = self.active_pane().in_alternated_state();
+                    self.execute(command::resolve(key, is_alternate))?;
+                }
+                Event::Resize(_, _) => self.dirty = true,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_pane_event(&mut self, event: PaneEvent) {
+        match event {
+            PaneEvent::Output(id) => {
+                if let Some(pane) = self.find_pane_mut(id) {
+                    pane.ack_output();
+                }
+                self.dirty = true;
+            }
+            PaneEvent::Exited(id) => {
+                if let Some(pane) = self.find_pane_mut(id) {
+                    pane.mark_exited();
+                }
+                self.dirty = true;
+            }
+            PaneEvent::Title(id, title) => {
+                if let Some(pane) = self.find_pane_mut(id) {
+                    pane.set_title(title);
+                }
+                self.dirty = true;
+            }
+        }
+    }
+
+    fn find_pane_mut(&mut self, id: PaneId) -> Option<&mut Pane> {
+        self.tabs
+            .iter_mut()
+            .flat_map(|tab| tab.panes.iter_mut())
+            .find(|pane| pane.id() == id)
     }
 
     /// Push the current layout into every pane of every tab, not just the
@@ -44,19 +135,13 @@ impl App {
     /// immediately. Drawing stays read-only.
     fn update_all(&mut self, terminal: &DefaultTerminal) -> Result<()> {
         let size = terminal.size()?;
+        if self.last_size != (size.width, size.height) {
+            self.last_size = (size.width, size.height);
+            self.dirty = true;
+        }
         let (_, content_area) = split_areas(Rect::new(0, 0, size.width, size.height));
         for tab in &mut self.tabs {
             tab.update(content_area);
-        }
-        Ok(())
-    }
-
-    fn handle_events(&mut self, timeout: std::time::Duration) -> Result<()> {
-        if crossterm::event::poll(timeout)?
-            && let crossterm::event::Event::Key(key) = crossterm::event::read()?
-        {
-            let is_alternate = self.active_pane().in_alternated_state();
-            self.execute(command::resolve(key, is_alternate))?;
         }
         Ok(())
     }
@@ -69,8 +154,10 @@ impl App {
                 let term_rows = term_rows.max(1);
                 let term_cols = term_cols.max(1);
                 let (rows, cols) = initialize_pane_size(term_rows, term_cols);
+                let id = self.next_pane_id();
+                let tx = self.events_tx.clone();
 
-                self.tabs.push(Tab::new(rows, cols)?);
+                self.tabs.push(Tab::new(rows, cols, id, tx)?);
 
                 self.active_tab = self.tabs.len() - 1;
             }
@@ -127,7 +214,9 @@ impl App {
                 let (rows, cols) = self.active_pane().size();
                 let new_rows = (rows / (self.get_tab().panes.len() as u16 + 1)).max(2);
                 let new_cols = cols.max(2);
-                let new_pane = Pane::new(new_rows, new_cols)?;
+                let id = self.next_pane_id();
+                let tx = self.events_tx.clone();
+                let new_pane = Pane::new(new_rows, new_cols, id, tx)?;
                 let tab = self.get_mut_tab();
                 tab.panes.push(new_pane);
                 tab.active = tab.panes.len() - 1;
@@ -148,6 +237,7 @@ impl App {
             }
             Command::SendKey(key) => self.send_key(key)?,
         }
+        self.dirty = true;
         Ok(())
     }
 

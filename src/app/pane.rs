@@ -1,3 +1,5 @@
+use std::sync::mpsc::Sender;
+
 use anyhow::Result;
 use crossterm::event::KeyEvent;
 use ratatui::Frame;
@@ -5,6 +7,8 @@ use ratatui::layout::{Margin, Rect};
 use ratatui::prelude::Position;
 use ratatui::style::{Color, Stylize};
 use ratatui::widgets::{Block, Paragraph};
+
+use crate::app::events::{PaneEvent, PaneId};
 
 mod keys;
 mod render;
@@ -14,53 +18,88 @@ use keys::key_to_bytes;
 use render::vterm_to_ratatui;
 use session::PtySession;
 
+/// Prefix `[exited]` unless the title already carries it.
+fn exited_label(title: &str) -> String {
+    if title.starts_with("[exited]") {
+        title.to_string()
+    } else {
+        format!("[exited] {title}")
+    }
+}
+
 pub struct Pane {
+    id: PaneId,
     session: PtySession,
     pub title: String,
+    exited: bool,
 }
 
 impl Pane {
-    pub fn new(rows: u16, cols: u16) -> Result<Self> {
+    pub fn new(rows: u16, cols: u16, id: PaneId, tx: Sender<PaneEvent>) -> Result<Self> {
         Ok(Pane {
-            session: PtySession::spawn(rows, cols)?,
+            id,
+            session: PtySession::spawn(rows, cols, id, tx)?,
             title: "~".to_string(),
+            exited: false,
         })
     }
+
+    pub fn id(&self) -> PaneId {
+        self.id
+    }
+
     /// Forward a key event to the pane's PTY as the bytes a real terminal
-    /// would send for it. No-op if the writer is gone (child exited).
+    /// would send for it. No-op once the child has exited; a write failure
+    /// (the child died between the exit event and this write) is logged
+    /// rather than brought down as an app error.
     pub fn write_key(&mut self, key: KeyEvent) -> Result<()> {
-        self.session.write_bytes(&key_to_bytes(&key))
+        if self.exited {
+            return Ok(());
+        }
+        if let Err(err) = self.session.write_bytes(&key_to_bytes(&key)) {
+            log::warn!("pane {} write failed: {err}", self.id.0);
+        }
+        Ok(())
     }
 
     /// Paste clipboard text into the pane's PTY. Framing follows the
     /// foreground application's bracketed-paste mode; see
     /// [`PtySession::paste`](session::PtySession::paste).
     pub fn paste(&mut self, text: &str) -> Result<()> {
-        self.session.paste(text)
+        if self.exited {
+            return Ok(());
+        }
+        if let Err(err) = self.session.paste(text) {
+            log::warn!("pane {} paste failed: {err}", self.id.0);
+        }
+        Ok(())
     }
 
-    pub fn sync_title(&mut self) -> bool {
-        if let Some(t) = self.session.take_title() {
-            if self.is_not_alive() && !self.title.starts_with("[exited]") {
-                self.title = format!("[exited] {}", self.title);
-            } else {
-                self.title = t;
-            }
-            return true; // title actually changed, redraw tab bar etc.
-        }
+    /// Apply a title reported by the foreground program. A title that arrives
+    /// after the child exited keeps the `[exited]` marker.
+    pub fn set_title(&mut self, title: String) {
+        self.title = if self.exited {
+            exited_label(&title)
+        } else {
+            title
+        };
+    }
 
-        false
+    /// Mark the child as exited and tag the title, whichever order the
+    /// `Title` and `Exited` events happen to arrive in.
+    pub fn mark_exited(&mut self) {
+        self.exited = true;
+        self.title = exited_label(&self.title);
+    }
+
+    /// Acknowledge an `Output` event: clears the session's coalescing flag so
+    /// the next chunk of output wakes the UI loop again.
+    pub fn ack_output(&mut self) {
+        self.session.take_screen_changed();
     }
 
     pub fn in_alternated_state(&self) -> bool {
         self.session.in_alternate_screen()
-    }
-
-    pub fn take_screen_changed(&self) -> bool {
-        self.session.take_screen_changed()
-    }
-    pub fn is_not_alive(&self) -> bool {
-        self.session.is_not_alive()
     }
 
     pub fn size(&self) -> (u16, u16) {
@@ -130,5 +169,16 @@ impl Pane {
                 frame.set_cursor_position(Position::new(x, inner.y + view_row as u16));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::exited_label;
+
+    #[test]
+    fn exited_label_is_added_exactly_once() {
+        assert_eq!(exited_label("vim"), "[exited] vim");
+        assert_eq!(exited_label("[exited] vim"), "[exited] vim");
     }
 }

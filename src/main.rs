@@ -1,13 +1,11 @@
 use anyhow::Result;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use log::LevelFilter;
 
 mod app;
 mod logging;
 
 use app::application::App;
-
-use crate::app::{tabs, util::initialize_pane_size};
 
 fn set_terminal_title(title: &str) {
     print!("\x1B]0;{}\x07", title);
@@ -29,15 +27,7 @@ fn main() -> Result<()> {
     enable_raw_mode()?;
     set_terminal_title("multiplexer");
 
-    let (term_cols, term_rows) = size()?;
-    let term_rows = term_rows.max(1);
-    let term_cols = term_cols.max(1);
-    let (rows, cols) = initialize_pane_size(term_rows, term_cols);
-    let mut app = App {
-        tabs: vec![tabs::Tab::new(rows, cols)?],
-        running: true,
-        active_tab: 0,
-    };
+    let mut app = App::new()?;
     ratatui::run(|terminal| app.run(terminal))?;
 
     disable_raw_mode()?;

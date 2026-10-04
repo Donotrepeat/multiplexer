@@ -1,49 +1,39 @@
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
+use crate::app::events::{PaneEvent, PaneId};
 use crate::app::util::lock_or_recover;
 
 const SCROLLBACK_SIZE: usize = 1200;
 
-#[derive(Clone, Default)]
-struct SharedTitle {
-    title: Arc<Mutex<Option<String>>>,
-    changed: Arc<AtomicBool>,
-}
-
-impl SharedTitle {
-    fn set(&self, title: String) {
-        *lock_or_recover(&self.title, "pane title") = Some(title);
-        self.changed.store(true, Ordering::Relaxed);
-    }
-
-    fn set_from_bytes(&self, title: &[u8]) {
-        if let Ok(s) = std::str::from_utf8(title) {
-            self.set(s.to_string());
-        }
-    }
-
-    fn take_if_changed(&self) -> Option<String> {
-        self.changed
-            .swap(false, Ordering::Relaxed)
-            .then(|| lock_or_recover(&self.title, "pane title").clone())
-            .flatten()
-    }
-}
-
 struct MuxCallbacks {
-    title: SharedTitle,
+    id: PaneId,
+    /// Channel back to the UI loop.
+    tx: Sender<PaneEvent>,
     /// Replies to terminal queries. Buffered here rather than written,
     /// because callbacks run while the parser mutex is held; `read_loop`
     /// flushes them after `process()` returns and the parser lock is released.
     reply: Vec<u8>,
+    /// Last title reported. OSC 0 fires both the icon-name and title callbacks
+    /// with the same string; only a real change should reach the UI.
+    last_title: Option<String>,
 }
 
 impl MuxCallbacks {
+    fn set_title(&mut self, title: &[u8]) {
+        if let Ok(title) = std::str::from_utf8(title)
+            && self.last_title.as_deref() != Some(title)
+        {
+            self.last_title = Some(title.to_string());
+            let _ = self.tx.send(PaneEvent::Title(self.id, title.to_string()));
+        }
+    }
+
     fn take_reply(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.reply)
     }
@@ -51,12 +41,12 @@ impl MuxCallbacks {
 
 impl vt100::Callbacks for MuxCallbacks {
     fn set_window_title(&mut self, _screen: &mut vt100::Screen, title: &[u8]) {
-        self.title.set_from_bytes(title);
+        self.set_title(title);
     }
 
     fn set_window_icon_name(&mut self, _screen: &mut vt100::Screen, icon_name: &[u8]) {
         // treat OSC 1 the same as OSC 2 if you want icon-name-only tools to count
-        self.title.set_from_bytes(icon_name);
+        self.set_title(icon_name);
     }
     fn unhandled_csi(
         &mut self,
@@ -117,14 +107,15 @@ fn read_loop(
     vpty: &Mutex<vt100::Parser<MuxCallbacks>>,
     writer: &PtyWriter,
     screen_changed: &AtomicBool,
-    exited: &AtomicBool,
+    tx: &Sender<PaneEvent>,
+    id: PaneId,
     mut reader: impl Read,
 ) {
     let mut buf = [0u8; 4096];
     loop {
         match reader.read(&mut buf) {
             Ok(0) => {
-                exited.store(true, Ordering::Relaxed);
+                let _ = tx.send(PaneEvent::Exited(id));
                 break;
             }
             Ok(n) => {
@@ -140,10 +131,15 @@ fn read_loop(
                 if !reply.is_empty() {
                     let _ = writer.write_all(&reply);
                 }
-                screen_changed.store(true, Ordering::Relaxed);
+                if !screen_changed.swap(true, Ordering::Relaxed) {
+                    // Coalesced: the UI loop clears the flag when it handles
+                    // this event, so the next chunk of output wakes it again.
+                    let _ = tx.send(PaneEvent::Output(id));
+                }
             }
+            Err(err) if err.kind() == ErrorKind::Interrupted => continue,
             Err(_) => {
-                exited.store(true, Ordering::Relaxed);
+                let _ = tx.send(PaneEvent::Exited(id));
                 break;
             }
         }
@@ -188,8 +184,6 @@ pub(super) struct PtySession {
     master: Box<dyn MasterPty>,
     child: Box<dyn Child + Send + Sync>,
     screen_changed: Arc<AtomicBool>,
-    exited: Arc<AtomicBool>,
-    title: SharedTitle,
     rows: u16,
     cols: u16,
 }
@@ -201,7 +195,7 @@ impl PtySession {
             .alternate_screen()
     }
 
-    pub(super) fn spawn(rows: u16, cols: u16) -> Result<Self> {
+    pub(super) fn spawn(rows: u16, cols: u16, id: PaneId, tx: Sender<PaneEvent>) -> Result<Self> {
         let pair = native_pty_system().openpty(PtySize {
             rows,
             cols,
@@ -215,26 +209,27 @@ impl PtySession {
         drop(pair.slave);
 
         let writer = Arc::new(PtyWriter::new(pair.master.take_writer()?));
-        let title = SharedTitle::default();
         let vpty = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
             rows,
             cols,
             SCROLLBACK_SIZE,
             MuxCallbacks {
-                title: title.clone(),
+                id,
+                tx: tx.clone(),
                 reply: Vec::new(),
+                last_title: None,
             },
         )));
-        let screen_changed = Arc::new(AtomicBool::new(true));
+        // Starts clear: the app draws its first frame without waiting for
+        // output, and `read_loop` wakes it only on the next transition.
+        let screen_changed = Arc::new(AtomicBool::new(false));
         let vpt_clone = Arc::clone(&vpty);
         let sc_clone = Arc::clone(&screen_changed);
         let writer_clone = Arc::clone(&writer);
 
         let reader = pair.master.try_clone_reader()?;
-        let exited = Arc::new(AtomicBool::new(false));
-        let ex_clone = Arc::clone(&exited);
         let _reader_thread = std::thread::spawn(move || {
-            read_loop(&vpt_clone, &writer_clone, &sc_clone, &ex_clone, reader)
+            read_loop(&vpt_clone, &writer_clone, &sc_clone, &tx, id, reader)
         });
 
         Ok(PtySession {
@@ -243,17 +238,12 @@ impl PtySession {
             master: pair.master,
             child,
             screen_changed,
-            exited,
-            title,
             rows,
             cols,
         })
     }
 
     pub(super) fn write_bytes(&self, bytes: &[u8]) -> Result<()> {
-        if self.is_not_alive() {
-            return Ok(());
-        }
         self.writer.write_all(bytes)?;
         Ok(())
     }
@@ -278,14 +268,6 @@ impl PtySession {
 
     pub(super) fn take_screen_changed(&self) -> bool {
         self.screen_changed.swap(false, Ordering::Relaxed)
-    }
-
-    pub(super) fn is_not_alive(&self) -> bool {
-        self.exited.load(Ordering::Relaxed)
-    }
-
-    pub(super) fn take_title(&self) -> Option<String> {
-        self.title.take_if_changed()
     }
 
     pub(super) fn size(&self) -> (u16, u16) {
@@ -344,6 +326,7 @@ impl Drop for PtySession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc::{self, Receiver, Sender};
 
     struct TestWriter(Arc<Mutex<Vec<u8>>>);
 
@@ -359,21 +342,23 @@ mod tests {
     }
 
     fn test_parser() -> vt100::Parser<MuxCallbacks> {
-        test_parser_with_title().0
+        test_parser_with_events().0
     }
 
-    fn test_parser_with_title() -> (vt100::Parser<MuxCallbacks>, SharedTitle) {
-        let title = SharedTitle::default();
+    fn test_parser_with_events() -> (vt100::Parser<MuxCallbacks>, Receiver<PaneEvent>) {
+        let (tx, rx) = mpsc::channel();
         let parser = vt100::Parser::new_with_callbacks(
             24,
             80,
             SCROLLBACK_SIZE,
             MuxCallbacks {
-                title: title.clone(),
+                id: PaneId(1),
+                tx,
                 reply: Vec::new(),
+                last_title: None,
             },
         );
-        (parser, title)
+        (parser, rx)
     }
 
     #[allow(clippy::type_complexity)]
@@ -382,10 +367,10 @@ mod tests {
         Arc<PtyWriter>,
         Arc<Mutex<Vec<u8>>>,
         Arc<AtomicBool>,
-        Arc<AtomicBool>,
-        SharedTitle,
+        Sender<PaneEvent>,
+        Receiver<PaneEvent>,
     ) {
-        let title = SharedTitle::default();
+        let (tx, rx) = mpsc::channel();
         let bytes = Arc::new(Mutex::new(Vec::new()));
         let writer = Arc::new(PtyWriter::new(Box::new(TestWriter(Arc::clone(&bytes)))));
         let vpty = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
@@ -393,13 +378,14 @@ mod tests {
             80,
             SCROLLBACK_SIZE,
             MuxCallbacks {
-                title: title.clone(),
+                id: PaneId(1),
+                tx: tx.clone(),
                 reply: Vec::new(),
+                last_title: None,
             },
         )));
         let screen_changed = Arc::new(AtomicBool::new(false));
-        let exited = Arc::new(AtomicBool::new(false));
-        (vpty, writer, bytes, screen_changed, exited, title)
+        (vpty, writer, bytes, screen_changed, tx, rx)
     }
 
     #[test]
@@ -459,65 +445,86 @@ mod tests {
 
     #[test]
     fn osc0_title_surfaces_as_single_change() {
-        let (mut parser, title) = test_parser_with_title();
+        let (mut parser, events) = test_parser_with_events();
         // OSC 0 fires both the icon-name and title callbacks with the same
         // string; the channel must still report exactly one change.
         parser.process(b"\x1b]0;my title\x07");
-        assert_eq!(title.take_if_changed().as_deref(), Some("my title"));
-        assert_eq!(title.take_if_changed(), None);
+        assert_eq!(
+            events.try_recv().ok(),
+            Some(PaneEvent::Title(PaneId(1), "my title".into()))
+        );
+        assert_eq!(events.try_recv().ok(), None);
     }
 
     #[test]
     fn osc2_title_updates() {
-        let (mut parser, title) = test_parser_with_title();
+        let (mut parser, events) = test_parser_with_events();
         parser.process(b"\x1b]2;other title\x07");
-        assert_eq!(title.take_if_changed().as_deref(), Some("other title"));
+        assert_eq!(
+            events.try_recv().ok(),
+            Some(PaneEvent::Title(PaneId(1), "other title".into()))
+        );
     }
 
     #[test]
     fn osc1_icon_name_counts_as_title() {
-        let (mut parser, title) = test_parser_with_title();
+        let (mut parser, events) = test_parser_with_events();
         parser.process(b"\x1b]1;icon name\x07");
-        assert_eq!(title.take_if_changed().as_deref(), Some("icon name"));
+        assert_eq!(
+            events.try_recv().ok(),
+            Some(PaneEvent::Title(PaneId(1), "icon name".into()))
+        );
     }
 
     #[test]
     fn non_utf8_title_is_ignored() {
-        let (mut parser, title) = test_parser_with_title();
+        let (mut parser, events) = test_parser_with_events();
         parser.process(b"\x1b]2;\xff\xfe\x07");
-        assert_eq!(title.take_if_changed(), None);
+        assert_eq!(events.try_recv().ok(), None);
     }
 
     #[test]
-    fn latest_title_wins_before_sync() {
-        let (mut parser, title) = test_parser_with_title();
+    fn every_title_change_is_reported_in_order() {
+        let (mut parser, events) = test_parser_with_events();
         parser.process(b"\x1b]2;first\x07");
         parser.process(b"\x1b]2;second\x07");
-        assert_eq!(title.take_if_changed().as_deref(), Some("second"));
+        assert_eq!(
+            events.try_recv().ok(),
+            Some(PaneEvent::Title(PaneId(1), "first".into()))
+        );
+        assert_eq!(
+            events.try_recv().ok(),
+            Some(PaneEvent::Title(PaneId(1), "second".into()))
+        );
     }
 
     #[test]
     fn read_loop_publishes_title_and_flags_screen() {
-        let (vpty, writer, _bytes, screen_changed, exited, title) = session_wiring();
+        let (vpty, writer, _bytes, screen_changed, tx, events) = session_wiring();
         read_loop(
             &vpty,
             &writer,
             &screen_changed,
-            &exited,
+            &tx,
+            PaneId(1),
             std::io::Cursor::new(b"\x1b]2;hi\x07".to_vec()),
         );
-        assert_eq!(title.take_if_changed().as_deref(), Some("hi"));
+        assert_eq!(
+            events.try_recv().ok(),
+            Some(PaneEvent::Title(PaneId(1), "hi".into()))
+        );
         assert!(screen_changed.swap(false, Ordering::Relaxed));
     }
 
     #[test]
-    fn read_loop_output_lands_in_screen_and_sets_flag() {
-        let (vpty, writer, _bytes, screen_changed, exited, _title) = session_wiring();
+    fn read_loop_output_lands_in_screen_and_emits_output() {
+        let (vpty, writer, _bytes, screen_changed, tx, events) = session_wiring();
         read_loop(
             &vpty,
             &writer,
             &screen_changed,
-            &exited,
+            &tx,
+            PaneId(1),
             std::io::Cursor::new(b"hello".to_vec()),
         );
         assert_eq!(
@@ -525,29 +532,61 @@ mod tests {
             Some("hello".to_string())
         );
         assert!(screen_changed.swap(false, Ordering::Relaxed));
+        assert_eq!(events.try_recv().ok(), Some(PaneEvent::Output(PaneId(1))));
+        assert_eq!(events.try_recv().ok(), Some(PaneEvent::Exited(PaneId(1))));
     }
 
     #[test]
-    fn read_loop_eof_leaves_flag_clear() {
-        let (vpty, writer, _bytes, screen_changed, exited, _title) = session_wiring();
+    fn read_loop_eof_emits_exited() {
+        let (vpty, writer, _bytes, screen_changed, tx, events) = session_wiring();
         read_loop(
             &vpty,
             &writer,
             &screen_changed,
-            &exited,
+            &tx,
+            PaneId(1),
             std::io::Cursor::new(Vec::new()),
         );
+        assert_eq!(events.try_recv().ok(), Some(PaneEvent::Exited(PaneId(1))));
         assert!(!screen_changed.swap(false, Ordering::Relaxed));
     }
 
     #[test]
-    fn read_loop_flushes_buffered_csi_reply_after_processing() {
-        let (vpty, writer, bytes, screen_changed, exited, _title) = session_wiring();
+    fn read_loop_coalesces_output_until_the_flag_is_cleared() {
+        let (vpty, writer, _bytes, screen_changed, tx, events) = session_wiring();
+        screen_changed.store(true, Ordering::Relaxed);
         read_loop(
             &vpty,
             &writer,
             &screen_changed,
-            &exited,
+            &tx,
+            PaneId(1),
+            std::io::Cursor::new(b"a".to_vec()),
+        );
+        assert_eq!(events.try_recv().ok(), Some(PaneEvent::Exited(PaneId(1))));
+
+        screen_changed.store(false, Ordering::Relaxed);
+        read_loop(
+            &vpty,
+            &writer,
+            &screen_changed,
+            &tx,
+            PaneId(1),
+            std::io::Cursor::new(b"b".to_vec()),
+        );
+        assert_eq!(events.try_recv().ok(), Some(PaneEvent::Output(PaneId(1))));
+        assert_eq!(events.try_recv().ok(), Some(PaneEvent::Exited(PaneId(1))));
+    }
+
+    #[test]
+    fn read_loop_flushes_buffered_csi_reply_after_processing() {
+        let (vpty, writer, bytes, screen_changed, tx, _events) = session_wiring();
+        read_loop(
+            &vpty,
+            &writer,
+            &screen_changed,
+            &tx,
+            PaneId(1),
             std::io::Cursor::new(b"\x1b[5n".to_vec()),
         );
         assert_eq!(*bytes.lock().unwrap(), b"\x1b[0n".to_vec());

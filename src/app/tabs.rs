@@ -1,3 +1,6 @@
+use std::sync::mpsc::Sender;
+
+use crate::app::events::{PaneEvent, PaneId};
 use crate::app::pane::Pane;
 use ratatui::{Frame, layout::Rect};
 
@@ -25,9 +28,9 @@ fn active_after_removal(active: usize, len: usize) -> usize {
 }
 
 impl Tab {
-    pub fn new(row: u16, coll: u16) -> Result<Self> {
-        log::debug!("screen {row},{coll}");
-        let panes = vec![Pane::new(row, coll)?];
+    pub fn new(row: u16, col: u16, id: PaneId, tx: Sender<PaneEvent>) -> Result<Self> {
+        log::debug!("screen {row},{col}");
+        let panes = vec![Pane::new(row, col, id, tx)?];
 
         Ok(Self {
             panes,
@@ -51,7 +54,6 @@ impl Tab {
                     rect.height.saturating_sub(2).max(2),
                     rect.width.saturating_sub(2).max(2),
                 );
-                pane.sync_title();
             }
         }
     }
@@ -94,12 +96,40 @@ impl Tab {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc;
+
+    /// Hands out panes and tabs with distinct ids. The event receiver is
+    /// dropped: tests do not observe events and sends failing is harmless.
+    struct PaneMaker {
+        next: u64,
+        tx: Sender<PaneEvent>,
+    }
+
+    impl PaneMaker {
+        fn new() -> Self {
+            let (tx, _rx) = mpsc::channel();
+            Self { next: 0, tx }
+        }
+
+        fn pane(&mut self) -> Result<Pane> {
+            let id = PaneId(self.next);
+            self.next += 1;
+            Pane::new(4, 20, id, self.tx.clone())
+        }
+
+        fn tab(&mut self) -> Result<Tab> {
+            let id = PaneId(self.next);
+            self.next += 1;
+            Tab::new(4, 20, id, self.tx.clone())
+        }
+    }
 
     #[test]
     fn update_resizes_every_pane_to_its_cell() -> Result<()> {
-        let mut tab = Tab::new(4, 20)?;
-        tab.panes.push(Pane::new(4, 20)?);
-        tab.panes.push(Pane::new(4, 20)?);
+        let mut maker = PaneMaker::new();
+        let mut tab = maker.tab()?;
+        tab.panes.push(maker.pane()?);
+        tab.panes.push(maker.pane()?);
 
         let area = Rect::new(0, 1, 41, 10);
         tab.update(area);
@@ -138,15 +168,17 @@ mod tests {
 
     #[test]
     fn del_pane_never_underflows_and_keeps_active_in_bounds() -> Result<()> {
+        let mut maker = PaneMaker::new();
+
         // Deleting the only pane empties the tab without panicking.
-        let mut single = Tab::new(4, 20)?;
+        let mut single = maker.tab()?;
         single.del_pane();
         assert!(single.panes.is_empty());
         assert_eq!(single.active, 0);
 
-        let mut tab = Tab::new(4, 20)?;
-        tab.panes.push(Pane::new(4, 20)?);
-        tab.panes.push(Pane::new(4, 20)?);
+        let mut tab = maker.tab()?;
+        tab.panes.push(maker.pane()?);
+        tab.panes.push(maker.pane()?);
 
         // Deleting a middle pane keeps the same index.
         tab.active = 1;
