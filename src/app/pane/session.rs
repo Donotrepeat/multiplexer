@@ -92,9 +92,31 @@ impl vt100::Callbacks for MuxCallbacks {
     }
 }
 
+/// The write half of a pane's PTY.
+///
+/// A newtype so the hot paths never juggle an `Option` — nothing ever takes
+/// the writer away — while tests can still inject a recording writer behind
+/// `dyn Write`.
+struct PtyWriter(Mutex<Box<dyn Write + Send>>);
+
+impl PtyWriter {
+    fn new(writer: Box<dyn Write + Send>) -> Self {
+        Self(Mutex::new(writer))
+    }
+
+    /// Write `bytes` to the PTY. A failure means the child is gone; callers
+    /// decide whether that is worth surfacing.
+    fn write_all(&self, bytes: &[u8]) -> std::io::Result<()> {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .write_all(bytes)
+    }
+}
+
 fn read_loop(
     vpty: &Mutex<vt100::Parser<MuxCallbacks>>,
-    writer: &Mutex<Option<Box<dyn Write + Send>>>,
+    writer: &PtyWriter,
     screen_changed: &AtomicBool,
     exited: &AtomicBool,
     mut reader: impl Read,
@@ -116,10 +138,8 @@ fn read_loop(
                     parser.process(&buf[..n]);
                     parser.callbacks_mut().take_reply()
                 };
-                if !reply.is_empty()
-                    && let Some(w) = writer.lock().unwrap_or_else(|e| e.into_inner()).as_mut()
-                {
-                    let _ = w.write_all(&reply);
+                if !reply.is_empty() {
+                    let _ = writer.write_all(&reply);
                 }
                 screen_changed.store(true, Ordering::Relaxed);
             }
@@ -165,7 +185,7 @@ fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
 
 pub(super) struct PtySession {
     vpty: Arc<Mutex<vt100::Parser<MuxCallbacks>>>,
-    writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
+    writer: Arc<PtyWriter>,
     master: Box<dyn MasterPty>,
     child: Box<dyn Child + Send + Sync>,
     screen_changed: Arc<AtomicBool>,
@@ -197,7 +217,7 @@ impl PtySession {
         let child = pair.slave.spawn_command(cmd)?;
         drop(pair.slave);
 
-        let writer = Arc::new(Mutex::new(Some(pair.master.take_writer()?)));
+        let writer = Arc::new(PtyWriter::new(pair.master.take_writer()?));
         let title = SharedTitle::default();
         let vpty = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
             rows,
@@ -237,14 +257,7 @@ impl PtySession {
         if self.is_not_alive() {
             return Ok(());
         }
-        if let Some(w) = self
-            .writer
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_mut()
-        {
-            w.write_all(bytes)?;
-        }
+        self.writer.write_all(bytes)?;
         Ok(())
     }
 
@@ -381,7 +394,7 @@ mod tests {
     #[allow(clippy::type_complexity)]
     fn session_wiring() -> (
         Arc<Mutex<vt100::Parser<MuxCallbacks>>>,
-        Arc<Mutex<Option<Box<dyn Write + Send>>>>,
+        Arc<PtyWriter>,
         Arc<Mutex<Vec<u8>>>,
         Arc<AtomicBool>,
         Arc<AtomicBool>,
@@ -389,8 +402,7 @@ mod tests {
     ) {
         let title = SharedTitle::default();
         let bytes = Arc::new(Mutex::new(Vec::new()));
-        let writer: Arc<Mutex<Option<Box<dyn Write + Send>>>> =
-            Arc::new(Mutex::new(Some(Box::new(TestWriter(Arc::clone(&bytes))))));
+        let writer = Arc::new(PtyWriter::new(Box::new(TestWriter(Arc::clone(&bytes)))));
         let vpty = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
             24,
             80,
