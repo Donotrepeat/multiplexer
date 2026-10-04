@@ -5,6 +5,8 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
+use crate::app::util::lock_or_recover;
+
 const SCROLLBACK_SIZE: usize = 1200;
 
 #[derive(Clone, Default)]
@@ -15,7 +17,7 @@ struct SharedTitle {
 
 impl SharedTitle {
     fn set(&self, title: String) {
-        *self.title.lock().unwrap_or_else(|e| e.into_inner()) = Some(title);
+        *lock_or_recover(&self.title, "pane title") = Some(title);
         self.changed.store(true, Ordering::Relaxed);
     }
 
@@ -28,7 +30,7 @@ impl SharedTitle {
     fn take_if_changed(&self) -> Option<String> {
         self.changed
             .swap(false, Ordering::Relaxed)
-            .then(|| self.title.lock().unwrap_or_else(|e| e.into_inner()).clone())
+            .then(|| lock_or_recover(&self.title, "pane title").clone())
             .flatten()
     }
 }
@@ -107,10 +109,7 @@ impl PtyWriter {
     /// Write `bytes` to the PTY. A failure means the child is gone; callers
     /// decide whether that is worth surfacing.
     fn write_all(&self, bytes: &[u8]) -> std::io::Result<()> {
-        self.0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .write_all(bytes)
+        lock_or_recover(&self.0, "pty writer").write_all(bytes)
     }
 }
 
@@ -134,7 +133,7 @@ fn read_loop(
                 // queues are taken while that lock is still held, then
                 // flushed once it is released.
                 let reply = {
-                    let mut parser = vpty.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut parser = lock_or_recover(vpty, "vt100 parser");
                     parser.process(&buf[..n]);
                     parser.callbacks_mut().take_reply()
                 };
@@ -197,9 +196,7 @@ pub(super) struct PtySession {
 
 impl PtySession {
     pub(super) fn in_alternate_screen(&self) -> bool {
-        self.vpty
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        lock_or_recover(&self.vpty, "vt100 parser")
             .screen()
             .alternate_screen()
     }
@@ -264,9 +261,7 @@ impl PtySession {
     /// Whether the foreground application asked for bracketed paste
     /// (`ESC[?2004h`), which the parser tracks on the current screen.
     pub(super) fn bracketed_paste(&self) -> bool {
-        self.vpty
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        lock_or_recover(&self.vpty, "vt100 parser")
             .screen()
             .bracketed_paste()
     }
@@ -316,36 +311,26 @@ impl PtySession {
                 pixel_height: 0,
             })
             .unwrap();
-        self.vpty
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        lock_or_recover(&self.vpty, "vt100 parser")
             .screen_mut()
             .set_size(rows, cols);
     }
 
     pub(super) fn scroll_offset(&self) -> usize {
-        self.vpty
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        lock_or_recover(&self.vpty, "vt100 parser")
             .screen()
             .scrollback()
     }
 
     pub(super) fn set_scroll_offset(&self, offset: usize) {
-        self.vpty
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        lock_or_recover(&self.vpty, "vt100 parser")
             .screen_mut()
             .set_scrollback(offset);
         log::debug!("offset {offset}");
     }
 
     pub(super) fn screen(&self) -> vt100::Screen {
-        self.vpty
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .screen()
-            .clone()
+        lock_or_recover(&self.vpty, "vt100 parser").screen().clone()
     }
 }
 
