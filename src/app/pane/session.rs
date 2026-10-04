@@ -34,8 +34,17 @@ impl SharedTitle {
 }
 
 struct MuxCallbacks {
-    writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
     title: SharedTitle,
+    /// Replies to terminal queries. Buffered here rather than written,
+    /// because callbacks run while the parser mutex is held; `read_loop`
+    /// flushes them after `process()` returns and the parser lock is released.
+    reply: Vec<u8>,
+}
+
+impl MuxCallbacks {
+    fn take_reply(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.reply)
+    }
 }
 
 impl vt100::Callbacks for MuxCallbacks {
@@ -77,20 +86,15 @@ impl vt100::Callbacks for MuxCallbacks {
             }
             _ => None,
         };
-        if let Some(bytes) = reply
-            && let Some(w) = self
-                .writer
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .as_mut()
-        {
-            let _ = w.write_all(&bytes);
+        if let Some(bytes) = reply {
+            self.reply.extend_from_slice(&bytes);
         }
     }
 }
 
 fn read_loop(
     vpty: &Mutex<vt100::Parser<MuxCallbacks>>,
+    writer: &Mutex<Option<Box<dyn Write + Send>>>,
     screen_changed: &AtomicBool,
     exited: &AtomicBool,
     mut reader: impl Read,
@@ -103,9 +107,20 @@ fn read_loop(
                 break;
             }
             Ok(n) => {
-                vpty.lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .process(&buf[..n]);
+                // Lock order: parser, then writer — and never the reverse.
+                // `process` runs under the parser lock, so any replies it
+                // queues are taken while that lock is still held, then
+                // flushed once it is released.
+                let reply = {
+                    let mut parser = vpty.lock().unwrap_or_else(|e| e.into_inner());
+                    parser.process(&buf[..n]);
+                    parser.callbacks_mut().take_reply()
+                };
+                if !reply.is_empty()
+                    && let Some(w) = writer.lock().unwrap_or_else(|e| e.into_inner()).as_mut()
+                {
+                    let _ = w.write_all(&reply);
+                }
                 screen_changed.store(true, Ordering::Relaxed);
             }
             Err(_) => {
@@ -189,19 +204,21 @@ impl PtySession {
             cols,
             SCROLLBACK_SIZE,
             MuxCallbacks {
-                writer: Arc::clone(&writer),
                 title: title.clone(),
+                reply: Vec::new(),
             },
         )));
         let screen_changed = Arc::new(AtomicBool::new(true));
         let vpt_clone = Arc::clone(&vpty);
         let sc_clone = Arc::clone(&screen_changed);
+        let writer_clone = Arc::clone(&writer);
 
         let reader = pair.master.try_clone_reader()?;
         let exited = Arc::new(AtomicBool::new(false));
         let ex_clone = Arc::clone(&exited);
-        let _reader_thread =
-            std::thread::spawn(move || read_loop(&vpt_clone, &sc_clone, &ex_clone, reader));
+        let _reader_thread = std::thread::spawn(move || {
+            read_loop(&vpt_clone, &writer_clone, &sc_clone, &ex_clone, reader)
+        });
 
         Ok(PtySession {
             vpty,
@@ -343,108 +360,109 @@ mod tests {
         }
     }
 
-    fn test_parser() -> (vt100::Parser<MuxCallbacks>, Arc<Mutex<Vec<u8>>>) {
-        let (parser, bytes, _title) = test_parser_with_title();
-        (parser, bytes)
+    fn test_parser() -> vt100::Parser<MuxCallbacks> {
+        test_parser_with_title().0
     }
 
-    fn test_parser_with_title() -> (
-        vt100::Parser<MuxCallbacks>,
-        Arc<Mutex<Vec<u8>>>,
-        SharedTitle,
-    ) {
-        let bytes = Arc::new(Mutex::new(Vec::new()));
-        let writer: Box<dyn Write + Send> = Box::new(TestWriter(Arc::clone(&bytes)));
-        let writer = Arc::new(Mutex::new(Some(writer)));
+    fn test_parser_with_title() -> (vt100::Parser<MuxCallbacks>, SharedTitle) {
         let title = SharedTitle::default();
-
         let parser = vt100::Parser::new_with_callbacks(
             24,
             80,
             SCROLLBACK_SIZE,
             MuxCallbacks {
-                writer: Arc::clone(&writer),
                 title: title.clone(),
+                reply: Vec::new(),
             },
         );
-        (parser, bytes, title)
+        (parser, title)
     }
 
     #[allow(clippy::type_complexity)]
     fn session_wiring() -> (
         Arc<Mutex<vt100::Parser<MuxCallbacks>>>,
+        Arc<Mutex<Option<Box<dyn Write + Send>>>>,
+        Arc<Mutex<Vec<u8>>>,
         Arc<AtomicBool>,
         Arc<AtomicBool>,
         SharedTitle,
     ) {
         let title = SharedTitle::default();
-        let writer: Box<dyn Write + Send> = Box::new(TestWriter(Arc::new(Mutex::new(Vec::new()))));
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let writer: Arc<Mutex<Option<Box<dyn Write + Send>>>> =
+            Arc::new(Mutex::new(Some(Box::new(TestWriter(Arc::clone(&bytes))))));
         let vpty = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
             24,
             80,
             SCROLLBACK_SIZE,
             MuxCallbacks {
-                writer: Arc::new(Mutex::new(Some(writer))),
                 title: title.clone(),
+                reply: Vec::new(),
             },
         )));
         let screen_changed = Arc::new(AtomicBool::new(false));
         let exited = Arc::new(AtomicBool::new(false));
-        (vpty, screen_changed, exited, title)
+        (vpty, writer, bytes, screen_changed, exited, title)
     }
 
     #[test]
     fn da1_replies_vt220() {
-        let (mut parser, bytes) = test_parser();
+        let mut parser = test_parser();
         parser.process(b"\x1b[c");
-        assert_eq!(*bytes.lock().unwrap(), b"\x1b[?62;22c".to_vec());
+        assert_eq!(
+            parser.callbacks_mut().take_reply(),
+            b"\x1b[?62;22c".to_vec()
+        );
     }
 
     #[test]
     fn dsr5_replies_ok() {
-        let (mut parser, bytes) = test_parser();
+        let mut parser = test_parser();
         parser.process(b"\x1b[5n");
-        assert_eq!(*bytes.lock().unwrap(), b"\x1b[0n".to_vec());
+        assert_eq!(parser.callbacks_mut().take_reply(), b"\x1b[0n".to_vec());
     }
 
     #[test]
     fn cpr_reports_one_based_position() {
-        let (mut parser, bytes) = test_parser();
+        let mut parser = test_parser();
         parser.process(b"\x1b[3;5H\x1b[6n");
-        assert_eq!(*bytes.lock().unwrap(), b"\x1b[3;5R".to_vec());
+        assert_eq!(parser.callbacks_mut().take_reply(), b"\x1b[3;5R".to_vec());
     }
 
     #[test]
     fn cpr_reports_home_as_1_1() {
-        let (mut parser, bytes) = test_parser();
+        let mut parser = test_parser();
         parser.process(b"\x1b[H\x1b[6n");
-        assert_eq!(*bytes.lock().unwrap(), b"\x1b[1;1R".to_vec());
+        assert_eq!(parser.callbacks_mut().take_reply(), b"\x1b[1;1R".to_vec());
     }
 
     #[test]
     fn private_cpr_is_answered() {
-        let (mut parser, bytes) = test_parser();
+        let mut parser = test_parser();
         parser.process(b"\x1b[2;2H\x1b[?6n");
-        assert_eq!(*bytes.lock().unwrap(), b"\x1b[2;2R".to_vec());
+        assert_eq!(parser.callbacks_mut().take_reply(), b"\x1b[2;2R".to_vec());
     }
 
     #[test]
     fn da2_replies_generic_terminal() {
-        let (mut parser, bytes) = test_parser();
+        let mut parser = test_parser();
         parser.process(b"\x1b[>0c");
-        assert_eq!(*bytes.lock().unwrap(), b"\x1b[>0;1;0c".to_vec());
+        assert_eq!(
+            parser.callbacks_mut().take_reply(),
+            b"\x1b[>0;1;0c".to_vec()
+        );
     }
 
     #[test]
     fn printer_status_is_ignored() {
-        let (mut parser, bytes) = test_parser();
+        let mut parser = test_parser();
         parser.process(b"\x1b[?5n");
-        assert!(bytes.lock().unwrap().is_empty());
+        assert!(parser.callbacks_mut().take_reply().is_empty());
     }
 
     #[test]
     fn osc0_title_surfaces_as_single_change() {
-        let (mut parser, _bytes, title) = test_parser_with_title();
+        let (mut parser, title) = test_parser_with_title();
         // OSC 0 fires both the icon-name and title callbacks with the same
         // string; the channel must still report exactly one change.
         parser.process(b"\x1b]0;my title\x07");
@@ -454,28 +472,28 @@ mod tests {
 
     #[test]
     fn osc2_title_updates() {
-        let (mut parser, _bytes, title) = test_parser_with_title();
+        let (mut parser, title) = test_parser_with_title();
         parser.process(b"\x1b]2;other title\x07");
         assert_eq!(title.take_if_changed().as_deref(), Some("other title"));
     }
 
     #[test]
     fn osc1_icon_name_counts_as_title() {
-        let (mut parser, _bytes, title) = test_parser_with_title();
+        let (mut parser, title) = test_parser_with_title();
         parser.process(b"\x1b]1;icon name\x07");
         assert_eq!(title.take_if_changed().as_deref(), Some("icon name"));
     }
 
     #[test]
     fn non_utf8_title_is_ignored() {
-        let (mut parser, _bytes, title) = test_parser_with_title();
+        let (mut parser, title) = test_parser_with_title();
         parser.process(b"\x1b]2;\xff\xfe\x07");
         assert_eq!(title.take_if_changed(), None);
     }
 
     #[test]
     fn latest_title_wins_before_sync() {
-        let (mut parser, _bytes, title) = test_parser_with_title();
+        let (mut parser, title) = test_parser_with_title();
         parser.process(b"\x1b]2;first\x07");
         parser.process(b"\x1b]2;second\x07");
         assert_eq!(title.take_if_changed().as_deref(), Some("second"));
@@ -483,9 +501,10 @@ mod tests {
 
     #[test]
     fn read_loop_publishes_title_and_flags_screen() {
-        let (vpty, screen_changed, exited, title) = session_wiring();
+        let (vpty, writer, _bytes, screen_changed, exited, title) = session_wiring();
         read_loop(
             &vpty,
+            &writer,
             &screen_changed,
             &exited,
             std::io::Cursor::new(b"\x1b]2;hi\x07".to_vec()),
@@ -496,9 +515,10 @@ mod tests {
 
     #[test]
     fn read_loop_output_lands_in_screen_and_sets_flag() {
-        let (vpty, screen_changed, exited, _title) = session_wiring();
+        let (vpty, writer, _bytes, screen_changed, exited, _title) = session_wiring();
         read_loop(
             &vpty,
+            &writer,
             &screen_changed,
             &exited,
             std::io::Cursor::new(b"hello".to_vec()),
@@ -512,9 +532,10 @@ mod tests {
 
     #[test]
     fn read_loop_eof_leaves_flag_clear() {
-        let (vpty, screen_changed, exited, _title) = session_wiring();
+        let (vpty, writer, _bytes, screen_changed, exited, _title) = session_wiring();
         read_loop(
             &vpty,
+            &writer,
             &screen_changed,
             &exited,
             std::io::Cursor::new(Vec::new()),
@@ -523,8 +544,24 @@ mod tests {
     }
 
     #[test]
+    fn read_loop_flushes_buffered_csi_reply_after_processing() {
+        let (vpty, writer, bytes, screen_changed, exited, _title) = session_wiring();
+        read_loop(
+            &vpty,
+            &writer,
+            &screen_changed,
+            &exited,
+            std::io::Cursor::new(b"\x1b[5n".to_vec()),
+        );
+        assert_eq!(*bytes.lock().unwrap(), b"\x1b[0n".to_vec());
+        // The reply is buffered by the callbacks and only reaches the writer
+        // through the post-`process` flush.
+        assert!(vpty.lock().unwrap().callbacks_mut().take_reply().is_empty());
+    }
+
+    #[test]
     fn bracketed_paste_mode_tracks_enable_and_disable() {
-        let (mut parser, _bytes) = test_parser();
+        let mut parser = test_parser();
         assert!(!parser.screen().bracketed_paste());
         parser.process(b"\x1b[?2004h");
         assert!(parser.screen().bracketed_paste());
@@ -568,7 +605,7 @@ mod tests {
 
     #[test]
     fn paste_decision_follows_the_parsed_mode() {
-        let (mut parser, _bytes) = test_parser();
+        let mut parser = test_parser();
         parser.process(b"\x1b[?2004h");
         assert_eq!(
             paste_bytes("hi\nthere", parser.screen().bracketed_paste()),
