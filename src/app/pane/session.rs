@@ -276,12 +276,12 @@ impl PtySession {
 
     /// Resize the backing PTY and the vt100 screen so both stay in sync.
     /// Skips the work (and avoids a spurious SIGWINCH on the shell) when the
-    /// requested size is unchanged.
-    pub(super) fn resize(&mut self, rows: u16, cols: u16) {
+    /// requested size is unchanged. Returns whether anything changed.
+    pub(super) fn resize(&mut self, rows: u16, cols: u16) -> bool {
         let rows = rows.max(1);
         let cols = cols.max(1);
         if rows == self.rows && cols == self.cols {
-            return;
+            return false;
         }
         self.rows = rows;
         self.cols = cols;
@@ -296,6 +296,7 @@ impl PtySession {
         lock_or_recover(&self.vpty, "vt100 parser")
             .screen_mut()
             .set_size(rows, cols);
+        true
     }
 
     pub(super) fn scroll_offset(&self) -> usize {
@@ -312,9 +313,17 @@ impl PtySession {
     }
 
     pub(super) fn screen(&self) -> vt100::Screen {
+        #[cfg(test)]
+        SCREEN_CLONES.fetch_add(1, Ordering::Relaxed);
         lock_or_recover(&self.vpty, "vt100 parser").screen().clone()
     }
 }
+
+/// Test-only count of full screen clones, so a test can assert that idle
+/// frames reuse the pane's cached snapshot.
+#[cfg(test)]
+pub(super) static SCREEN_CLONES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
 impl Drop for PtySession {
     fn drop(&mut self) {

@@ -32,6 +32,13 @@ pub struct Pane {
     session: PtySession,
     pub title: String,
     exited: bool,
+    /// Set by `ack_output` or a layout change; makes the next render refresh
+    /// `snapshot` instead of reusing it.
+    dirty: bool,
+    /// Last vt100 screen handed to the renderer. Cloning the whole screen
+    /// (scrollback included) every frame is the expensive part, so it is only
+    /// refreshed when something actually changed.
+    snapshot: Option<vt100::Screen>,
 }
 
 impl Pane {
@@ -41,6 +48,8 @@ impl Pane {
             session: PtySession::spawn(rows, cols, id, tx)?,
             title: "~".to_string(),
             exited: false,
+            dirty: true,
+            snapshot: None,
         })
     }
 
@@ -93,9 +102,11 @@ impl Pane {
     }
 
     /// Acknowledge an `Output` event: clears the session's coalescing flag so
-    /// the next chunk of output wakes the UI loop again.
+    /// the next chunk of output wakes the UI loop again, and schedules the
+    /// snapshot refresh for the next frame.
     pub fn ack_output(&mut self) {
         self.session.take_screen_changed();
+        self.dirty = true;
     }
 
     pub fn in_alternated_state(&self) -> bool {
@@ -108,6 +119,7 @@ impl Pane {
 
     pub fn set_scroll_offset(&mut self, offset: usize) {
         self.session.set_scroll_offset(offset);
+        self.dirty = true;
     }
 
     pub fn get_scroll_offset(&self) -> usize {
@@ -143,18 +155,29 @@ impl Pane {
     }
 
     pub fn resize(&mut self, rows: u16, cols: u16) {
-        self.session.resize(rows, cols);
+        if self.session.resize(rows, cols) {
+            // The snapshot holds a screen of the old size.
+            self.dirty = true;
+        }
     }
 
-    pub fn render_pane(&self, frame: &mut Frame, area: Rect, is_active: bool) {
-        let screen = self.session.screen();
+    pub fn render_pane(&mut self, frame: &mut Frame, area: Rect, is_active: bool) {
+        if self.dirty || self.snapshot.is_none() {
+            // Clear the coalescing flag before cloning so output that lands
+            // after the snapshot still wakes the loop; output that lands
+            // before it is part of the clone either way.
+            self.session.take_screen_changed();
+            self.snapshot = Some(self.session.screen());
+            self.dirty = false;
+        }
+        let screen = self.snapshot.as_ref().expect("snapshot refreshed above");
         let (screen_rows, _cols) = screen.size();
         let inner = area.inner(Margin {
             horizontal: 1,
             vertical: 1,
         });
         let rows = (screen_rows as usize).min(inner.height as usize);
-        let text = vterm_to_ratatui(&screen, rows);
+        let text = vterm_to_ratatui(screen, rows);
         frame.render_widget(
             Paragraph::new(text)
                 .block(Block::bordered().title(self.title.clone().bold().fg(Color::Cyan))),
@@ -174,11 +197,37 @@ impl Pane {
 
 #[cfg(test)]
 mod tests {
-    use super::exited_label;
+    use super::session::SCREEN_CLONES;
+    use super::*;
+    use std::sync::atomic::Ordering;
+    use std::sync::mpsc;
 
     #[test]
     fn exited_label_is_added_exactly_once() {
         assert_eq!(exited_label("vim"), "[exited] vim");
         assert_eq!(exited_label("[exited] vim"), "[exited] vim");
+    }
+
+    #[test]
+    fn idle_render_reuses_the_cached_screen() -> Result<()> {
+        let (tx, _rx) = mpsc::channel();
+        let mut pane = Pane::new(4, 20, PaneId(0), tx)?;
+        SCREEN_CLONES.store(0, Ordering::Relaxed);
+
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(20, 10))?;
+        let area = Rect::new(0, 0, 20, 10);
+
+        terminal.draw(|frame| pane.render_pane(frame, area, true))?;
+        assert_eq!(SCREEN_CLONES.load(Ordering::Relaxed), 1);
+
+        // Nothing changed: the cached snapshot is reused, no clone.
+        terminal.draw(|frame| pane.render_pane(frame, area, true))?;
+        assert_eq!(SCREEN_CLONES.load(Ordering::Relaxed), 1);
+
+        // Output schedules a refresh, so the next render clones again.
+        pane.ack_output();
+        terminal.draw(|frame| pane.render_pane(frame, area, true))?;
+        assert_eq!(SCREEN_CLONES.load(Ordering::Relaxed), 2);
+        Ok(())
     }
 }
