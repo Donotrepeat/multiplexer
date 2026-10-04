@@ -848,6 +848,7 @@ dependencies = [
  "portable-pty",
  "ratatui",
  "strum",
+ "unicode-width",
  "vt100",
 ]
 

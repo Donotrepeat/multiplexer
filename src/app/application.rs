@@ -9,6 +9,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::{DefaultTerminal, Frame};
+use unicode_width::UnicodeWidthChar;
 
 use crossterm::terminal::size;
 
@@ -170,13 +171,15 @@ impl App {
     }
 
     fn draw_bar(&mut self, frame: &mut Frame, area: Rect) {
+        let budgets = label_budgets(area.width as usize, self.tabs.len());
         let spans: Vec<Span> = self
             .tabs
             .iter_mut()
+            .zip(budgets)
             .enumerate()
-            .map(|(i, tab)| {
+            .map(|(i, (tab, budget))| {
                 tab.panes[tab.active].sync_title();
-                let label = format!("{}:{}  ", i + 1, tab.panes[tab.active].title);
+                let label = format!("{}:{}", i + 1, tab.panes[tab.active].title);
                 let style = if i == self.active_tab {
                     Style::default()
                         .fg(Color::Cyan)
@@ -184,10 +187,76 @@ impl App {
                 } else {
                     Style::default()
                 };
-                Span::styled(label, style)
+                Span::styled(fit_label(&label, budget), style)
             })
             .collect();
 
         frame.render_widget(Line::from(spans), area);
+    }
+}
+
+/// Split the bar's width evenly across `n` tabs. Earlier tabs absorb the
+/// remainder, so every column of the bar is assigned to exactly one tab.
+fn label_budgets(width: usize, n: usize) -> Vec<usize> {
+    if n == 0 {
+        return Vec::new();
+    }
+    let base = width / n;
+    let extra = width % n;
+    (0..n).map(|i| base + usize::from(i < extra)).collect()
+}
+
+/// Truncate `s` to `budget` display columns, padding it with spaces so each
+/// tab occupies exactly its slot. Wide characters are never split: a glyph
+/// that would cross the boundary is dropped and the slot padded instead.
+fn fit_label(s: &str, budget: usize) -> String {
+    let mut out = String::new();
+    let mut used = 0;
+    for c in s.chars() {
+        let width = c.width().unwrap_or(0);
+        if used + width > budget {
+            break;
+        }
+        used += width;
+        out.push(c);
+    }
+    out.extend(std::iter::repeat_n(' ', budget - used));
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use unicode_width::UnicodeWidthStr;
+
+    #[test]
+    fn budgets_cover_the_full_width() {
+        assert_eq!(label_budgets(10, 3), vec![4, 3, 3]);
+        assert_eq!(label_budgets(9, 3), vec![3, 3, 3]);
+        assert_eq!(label_budgets(0, 3), vec![0, 0, 0]);
+        assert_eq!(label_budgets(10, 0), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn fit_label_truncates_and_pads_by_display_width() {
+        assert_eq!(fit_label("1:abcdef", 4), "1:ab");
+        assert_eq!(fit_label("1:ab", 6), "1:ab  ");
+        assert_eq!(fit_label("1:日本語", 6), "1:日本");
+        assert_eq!(fit_label("1:日本語", 5), "1:日 ");
+    }
+
+    #[test]
+    fn narrow_bar_keeps_every_tab_visible() {
+        let labels = ["1:this title is far too long", "2:a", "3:b", "4:c", "5:d"];
+        let fitted: Vec<String> = label_budgets(40, labels.len())
+            .into_iter()
+            .zip(labels)
+            .map(|(budget, label)| fit_label(label, budget))
+            .collect();
+
+        assert_eq!(fitted.len(), 5);
+        assert!(fitted[0].starts_with("1:this"));
+        assert!(fitted.iter().all(|label| !label.trim().is_empty()));
+        assert_eq!(fitted.iter().map(|label| label.width()).sum::<usize>(), 40);
     }
 }
