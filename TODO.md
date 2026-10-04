@@ -6,7 +6,7 @@ Credits: derived from the vt100/ratatui bridge plan in the old `PLAN.md` (now de
 
 **History:** the previous round (B4 tab-bar width budgeting, E2–E7 and E9/E10: the explicit update pass, the pane event channel, snapshot caching, the writer type, the reaper/teardown, poisoned-lock logging, and the small cleanups) is fully resolved and pruned. E8 (splitting `pane.rs` into `session.rs` / `render.rs` / `keys.rs`) landed earlier in `1ef8fd4`.
 
-Known trade-off from E7: teardown signals the child with portable-pty's cloned `ChildKiller` (SIGHUP on Unix). A child that ignores it, or a grandchild that keeps the pty slave open, is detached after a bounded grace period instead of blocking the UI thread.
+Known trade-off from E7: teardown signals the child with portable-pty's cloned `ChildKiller` (SIGHUP on Unix) — but only until the reaper has `wait()`ed it, since a reaped PID can be reused and a late signal could hit an unrelated process. A child that ignores the signal, or a grandchild that keeps the pty slave open, is detached after a bounded grace period instead of blocking the UI thread.
 
 ## Verification
 
