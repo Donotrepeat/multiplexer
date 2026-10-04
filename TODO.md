@@ -1,107 +1,16 @@
 # TODO — Implementation Plan
 
-Credits: derived from the vt100/ratatui bridge plan in the old `PLAN.md` (now deleted), a code read-through of the current implementation, and `vt100` 0.16 / `portable-pty` 0.9 API verification.
+Credits: derived from the vt100/ratatui bridge plan in the old `PLAN.md` (now deleted), a code read-through of the implementation, and `vt100` 0.16 / `portable-pty` 0.9 API verification.
 
-Each item lists: what's wrong → why it's a problem → where → suggested fix → acceptance criteria. Items are grouped into milestones ranked by priority; within a milestone, land them in order.
+**Tooling state (verified 2026-10-04):** `cargo test` — 54/54 green. `cargo clippy --all-targets` — clean. CI (`.github/workflows/ci.yml`) — `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`, all green.
 
-**Tooling state (verified 2026-09-13):** `cargo test` — 35/35 green. `cargo clippy --all-targets` — clean. CI (`.github/workflows/ci.yml`) — `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`, all green.
+**History:** the previous round (B4 tab-bar width budgeting, E2–E7 and E9/E10: the explicit update pass, the pane event channel, snapshot caching, the writer type, the reaper/teardown, poisoned-lock logging, and the small cleanups) is fully resolved and pruned. E8 (splitting `pane.rs` into `session.rs` / `render.rs` / `keys.rs`) landed earlier in `1ef8fd4`.
 
-**History:** the previous TODO (code-quality findings) was fully resolved and pruned in `190a0e6`. This plan is the next round: correctness fixes, tab bar UI, clipboard + polish, and concurrency/architecture (Milestone E, added 2026-09-26). Future-work items that are deliberately deferred are listed at the bottom.
-
----
-
-## Milestone B — Tab bar UI
-### B4. Tab bar clips instead of fitting all tabs
-
-- **What:** `draw_bar` renders one long `Line` of `N:title  ` spans and lets ratatui clip it at the terminal width.
-- **Why:** with enough tabs (or long titles) the later tabs are cut off the right edge — the user can't see that they exist. This is the failure mode B1 called out; the acceptance ("truncate long titles so `N` tabs always fit one row") is only half-met (no crash, but whole tabs disappear).
-- **Where:** `src/app/application.rs` (`draw_bar`, commit `b3e5f80`).
-- **Suggested fix:** budget `area.width` across tabs — give each entry an equal share (minus its `N:` prefix and padding) and truncate each title to fit, so per-tab truncation replaces whole-tab loss.
-- **Acceptance:** with 5 tabs and one very long pane title on a narrow terminal, all five entries remain visible, each truncated.
-
----
-
-## Milestone E — Concurrency & architecture
-
-Ranked in landing order: E1 unblocks every exit feature; E2/E3 are correctness + safety; E4 is the structural core the rest hang off; E5–E10 build on it.
-
-### E2. Resize & title sync happen only inside `draw`
-
-- **What:** `draw_tab` is the only caller of `pane.resize(...)` and `pane.sync_title()`, and `App::draw` draws only the active tab.
-- **Why:** a render pass is performing model mutation, so background tabs never get resized on a terminal resize (their shell sees a stale size / no SIGWINCH until you switch to them) and their titles go stale (see B3).
-- **Where:** `src/app/tabs.rs` (`draw_tab`, 150-174), `src/app/application.rs` (`draw`, 154-162).
-- **Suggested fix:** move resize + sync into an explicit update pass (e.g. `App::update_all()`) that walks every tab and every pane, called on each loop iteration or on resize events; `draw_tab` becomes read-only. Land together with B3.
-- **Acceptance:** resize the terminal while a background tab is running a pager; switching to it shows the correct size immediately.
-
-### E3. Undocumented parser→writer lock order (deadlock hazard)
-
-- **What:** `MuxCallbacks::unhandled_csi` locks the PTY writer while already holding the parser mutex (it runs inside `process()`). This is safe only because no path locks parser-after-writer.
-- **Why:** an invisible, undocumented invariant that is one accidental `writer.lock()` + `vpty.lock()` away from a deadlock.
-- **Where:** `src/app/pane.rs` (`unhandled_csi`, 90-98; `read_loop` calls `process` at 116-118).
-- **Suggested fix:** buffer the reply bytes locally inside `unhandled_csi` and flush to the writer *after* `process()` returns and the parser lock is released; at minimum document the rule ("the parser lock may acquire the writer lock; never the reverse").
-- **Acceptance:** no write to the writer occurs while the parser lock is held; a comment states the lock-order rule.
-
-### E4. Replace the 16ms poll with an event channel
-
-- **What:** `App::run` polls all panes of the *active tab only* every iteration; `screen_changed`/`exited`/title are bare atomics with no wakeup power, and output from background tabs doesn't even shorten the poll.
-- **Why:** ~16ms output latency; background-tab changes are invisible to the loop; three ad-hoc flags where one typed message would do.
-- **Where:** `src/app/application.rs` (`run`, 21-37; `handle_events`, 39-47), `src/app/pane.rs` (atomics).
-- **Suggested fix:** give the app one `mpsc` channel; each reader thread gets a `Sender` and emits `PaneEvent::Output | Exited | Title(..)` instead of flipping flags. Loop does `recv_timeout(~16ms)` + a zero-timeout `poll` for keys; draw only when something changed. Use a bounded/`sync_channel` with a "coalesce old Output" strategy (Output is a boolean "dirty", not a count). This folds E1's exit signal and B3/E2's title propagation into one mechanism.
-- **Acceptance:** a background tab emitting output wakes the loop (observable via faster bar/title update); output no longer gated on the active tab.
-
-### E5. `screen()` clones the whole vt100 screen every frame
-
-- **What:** `render_pane` calls `session.screen()`, which clones the full `vt100::Screen` (`SCROLLBACK_SIZE` = 1200 rows) under the lock every frame, for every pane.
-- **Why:** real O(pane-count × 1200 rows) cost at 60fps; grows with panes and starves the reader thread's lock.
-- **Where:** `src/app/pane.rs` (`screen`, 267-273; `render_pane`, 362-385).
-- **Suggested fix:** clone only when `take_screen_changed()` was set, caching the snapshot between dirty frames. (Deeper: double-buffer the snapshot on the reader thread and publish via E4 — defer until the channel lands.)
-- **Acceptance:** idle frames do no `Screen` clone; rendering still correct.
-
-### E6. `Option<Box<dyn Write + Send>>` is never `None`
-
-- **What:** the writer is `Arc<Mutex<Option<Box<dyn Write + Send>>>>`, but nothing ever sets it to `None`, so every `if let Some(w) = ...as_mut()` branch is dead.
-- **Why:** the `Option` + `dyn Write` exist only to inject `TestWriter` in tests, yet leak into production hot paths (`write_bytes`, `unhandled_csi`).
-- **Where:** `src/app/pane.rs` (46-49, 131, 197-205).
-- **Suggested fix:** a `PtyWriter: Write + Send` trait or generic, or at minimum drop the `Option` and keep `Box<dyn Write + Send>`; the test shim lives behind the trait bound.
-- **Acceptance:** `write_bytes` has no `Option` unwrap; tests still inject a writer.
-
-### E7. Children reaped and threads detached on the UI thread
-
-- **What:** `Drop for PtySession` does `kill()` + `wait()` synchronously on whatever thread drops it (the UI thread), and the reader thread's `JoinHandle` is discarded at spawn.
-- **Why:** `wait()` can stall a frame (uninterruptible sleep); the reader thread outlives the session and holds `Arc`s (parser, flags) until the master fd closes.
-- **Where:** `src/app/pane.rs` (spawn, 177-178; `Drop`, 388-393).
-- **Suggested fix:** a small reaper that `wait()`s exited children and emits `PaneEvent::Exited` (E4), and store the reader `JoinHandle` so shutdown can join deterministically.
-- **Acceptance:** teardown is explicit; no `wait()` on the UI thread; no detached thread.
-
-### E8. `pane.rs` bundles four concerns (~1000 lines)
-
-- **What:** PTY lifecycle, the vt100↔ratatui bridge, key→byte encoding, and `MuxCallbacks` all in one file with almost no shared state.
-- **Why:** makes the lock-order invariant (E3) hard to see and each piece hard to test in isolation.
-- **Where:** `src/app/pane.rs`.
-- **Suggested fix:** split into `session.rs` / `render.rs` / `keys.rs` (or `keys/` + `term/`).
-- **Acceptance:** modules compile; `cargo test` green with tests co-located per module.
-
-### E9. Poisoned locks recovered silently
-
-- **What:** every `.lock().unwrap_or_else(|e| e.into_inner())` continues as if nothing happened.
-- **Why:** right default (the UI shouldn't hang because one pane panicked), but the panic is invisible — a reader-thread crash is only noticed as a frozen pane.
-- **Where:** throughout `src/app/pane.rs`.
-- **Suggested fix:** log the poison (via the buffered logger) before recovering, so crashes are observable in the dump.
-- **Acceptance:** a poisoned parser lock produces a log line, not silence.
-
-### E10. Small cleanups
-
-- **What:** (a) `sync_title` returns a `bool` every caller ignores (`tabs.rs:170`); (b) `draw_bar` reads the pane's `String` copy while a `SharedTitle` already holds the canonical value (`application.rs:170`); (c) `App::run` calls `terminal.draw` unconditionally every loop even on idle frames (`application.rs:34`).
-- **Why:** dead return value; two title stores; redundant redraw.
-- **Where:** as above.
-- **Suggested fix:** drop the return value (or use it to dirty only the bar); make the bar read `SharedTitle` (or the E4 event); draw only when changed.
-- **Acceptance:** single source of truth for titles; no unconditional draw.
-
----
+Known trade-off from E7: teardown signals the child with portable-pty's cloned `ChildKiller` (SIGHUP on Unix). A child that ignores it, or a grandchild that keeps the pty slave open, is detached after a bounded grace period instead of blocking the UI thread.
 
 ## Verification
 
-After every item, and once more per milestone:
+After every change:
 
 ```bash
 cargo fmt --check
@@ -109,13 +18,10 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-Manual checklist per milestone:
+Manual checklist:
 
-- **A:** PageUp pages; Alt+R on a single-pane tab doesn't crash; `exit` in a pane → `[exited]` title, no zombies after quit; `less` receives PageUp/PageDown; Ctrl+arrows word-jump in the shell.
-- **B:** tab bar shows titles and highlights the active tab; Alt+C/Alt+E/Alt+Q cycle visibly; terminal shrunk to tiny size doesn't panic.
-- **C:** Alt+V pastes; multi-line paste at a zsh prompt is editable, not executed; repo contains no Python files; `PLAN.md` gone.
-- **D:** Shift+Tab works inside a pane's TUI form; Alt+R on the last pane of the last tab quits cleanly in a debug build.
-- **E:** `exit` in a pane shows `[exited]`; resize propagates to background tabs; background output wakes the loop without that pane being active; no `wait()` on the UI thread.
+- **B:** tab bar shows titles and highlights the active tab; with more tabs than fit, every entry stays visible and truncates; terminal shrunk to a tiny size doesn't panic.
+- **E:** `exit` in a pane shows `[exited]`; resize propagates to background tabs; background output/titles wake the loop without that pane being active; no `wait()` on the UI thread; quitting with a busy pane doesn't stall and leaves no zombies.
 
 ## Future work (deliberately out of scope)
 
