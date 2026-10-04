@@ -199,13 +199,44 @@ impl Pane {
 mod tests {
     use super::session::SCREEN_CLONES;
     use super::*;
+    use crossterm::event::{KeyCode, KeyModifiers};
     use std::sync::atomic::Ordering;
     use std::sync::mpsc;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn exited_label_is_added_exactly_once() {
         assert_eq!(exited_label("vim"), "[exited] vim");
         assert_eq!(exited_label("[exited] vim"), "[exited] vim");
+    }
+
+    #[test]
+    fn pane_exit_is_reported_by_the_reaper() -> Result<()> {
+        let (tx, rx) = mpsc::channel();
+        let mut pane = Pane::new(4, 20, PaneId(7), tx)?;
+
+        for key in "exit\r".chars() {
+            let code = if key == '\r' {
+                KeyCode::Enter
+            } else {
+                KeyCode::Char(key)
+            };
+            pane.write_key(KeyEvent::new(code, KeyModifiers::NONE))?;
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match rx.recv_timeout(remaining) {
+                Ok(PaneEvent::Exited(id)) => {
+                    assert_eq!(id, PaneId(7));
+                    break;
+                }
+                Ok(_) => continue,
+                Err(err) => panic!("no Exited event from the reaper: {err}"),
+            }
+        }
+        Ok(())
     }
 
     #[test]

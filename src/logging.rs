@@ -81,10 +81,14 @@ mod tests {
         let _guard = TEST_LOCK.lock().unwrap();
         reset(LevelFilter::Debug).unwrap();
         log::debug!("scroll offset {}", 42);
+        // Other tests may log concurrently; find our entry instead of
+        // assuming the buffer holds exactly one line.
         let entries = logger().entries.lock().unwrap();
-        assert_eq!(entries.len(), 1);
-        assert!(entries[0].contains("[DEBUG]"));
-        assert!(entries[0].contains("scroll offset 42"));
+        let entry = entries
+            .iter()
+            .find(|entry| entry.contains("scroll offset 42"))
+            .expect("logged message captured");
+        assert!(entry.contains("[DEBUG]"));
     }
 
     #[test]
@@ -94,7 +98,7 @@ mod tests {
         log::debug!("hidden");
         log::info!("shown");
         let entries = logger().entries.lock().unwrap();
-        assert_eq!(entries.len(), 1);
-        assert!(entries[0].contains("[INFO"));
+        assert!(!entries.iter().any(|entry| entry.contains("hidden")));
+        assert!(entries.iter().any(|entry| entry.contains("shown")));
     }
 }

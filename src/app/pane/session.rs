@@ -2,9 +2,11 @@ use std::io::{ErrorKind, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
+use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
 use crate::app::events::{PaneEvent, PaneId};
 use crate::app::util::lock_or_recover;
@@ -114,10 +116,9 @@ fn read_loop(
     let mut buf = [0u8; 4096];
     loop {
         match reader.read(&mut buf) {
-            Ok(0) => {
-                let _ = tx.send(PaneEvent::Exited(id));
-                break;
-            }
+            // EOF just ends the reader thread; the reaper reports `Exited`
+            // once the child has actually been waited on.
+            Ok(0) => break,
             Ok(n) => {
                 // Lock order: parser, then writer — and never the reverse.
                 // `process` runs under the parser lock, so any replies it
@@ -138,10 +139,7 @@ fn read_loop(
                 }
             }
             Err(err) if err.kind() == ErrorKind::Interrupted => continue,
-            Err(_) => {
-                let _ = tx.send(PaneEvent::Exited(id));
-                break;
-            }
+            Err(_) => break,
         }
     }
 }
@@ -182,7 +180,11 @@ pub(super) struct PtySession {
     vpty: Arc<Mutex<vt100::Parser<MuxCallbacks>>>,
     writer: Arc<PtyWriter>,
     master: Box<dyn MasterPty>,
-    child: Box<dyn Child + Send + Sync>,
+    /// Signals the child to stop on teardown. The child itself lives in the
+    /// reaper thread, which owns `wait()`.
+    killer: Box<dyn ChildKiller + Send + Sync>,
+    reader_thread: Option<JoinHandle<()>>,
+    reaper_thread: Option<JoinHandle<()>>,
     screen_changed: Arc<AtomicBool>,
     rows: u16,
     cols: u16,
@@ -207,6 +209,7 @@ impl PtySession {
         let cmd = CommandBuilder::new(shell);
         let child = pair.slave.spawn_command(cmd)?;
         drop(pair.slave);
+        let killer = child.clone_killer();
 
         let writer = Arc::new(PtyWriter::new(pair.master.take_writer()?));
         let vpty = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
@@ -228,15 +231,26 @@ impl PtySession {
         let writer_clone = Arc::clone(&writer);
 
         let reader = pair.master.try_clone_reader()?;
-        let _reader_thread = std::thread::spawn(move || {
-            read_loop(&vpt_clone, &writer_clone, &sc_clone, &tx, id, reader)
+        let reader_tx = tx.clone();
+        let reader_thread = std::thread::spawn(move || {
+            read_loop(&vpt_clone, &writer_clone, &sc_clone, &reader_tx, id, reader)
+        });
+        let reaper_thread = std::thread::spawn(move || {
+            // Reaps the child so no zombies remain, and reports the exit
+            // even when a background grandchild keeps the pty slave open
+            // (which would otherwise delay the reader's EOF indefinitely).
+            let mut child = child;
+            let _ = child.wait();
+            let _ = tx.send(PaneEvent::Exited(id));
         });
 
         Ok(PtySession {
             vpty,
             writer,
             master: pair.master,
-            child,
+            killer,
+            reader_thread: Some(reader_thread),
+            reaper_thread: Some(reaper_thread),
             screen_changed,
             rows,
             cols,
@@ -325,10 +339,32 @@ impl PtySession {
 pub(super) static SCREEN_CLONES: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
+/// Join a background thread without letting a stuck child block teardown:
+/// wait up to a short grace period, then log and detach it.
+fn join_with_timeout(handle: Option<JoinHandle<()>>, what: &str) {
+    let Some(handle) = handle else {
+        return;
+    };
+    let deadline = Instant::now() + Duration::from_millis(200);
+    while !handle.is_finished() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    if handle.is_finished() {
+        let _ = handle.join();
+    } else {
+        log::warn!("{what} thread did not stop within the grace period; detaching");
+    }
+}
+
 impl Drop for PtySession {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        // The reaper owns the child and does the only `wait()`, off the UI
+        // thread. Killing first makes both background threads finish
+        // promptly; the bounded join keeps a child that ignores SIGHUP (or a
+        // grandchild holding the pty slave open) from hanging the app.
+        let _ = self.killer.kill();
+        join_with_timeout(self.reader_thread.take(), "pty reader");
+        join_with_timeout(self.reaper_thread.take(), "pty reaper");
     }
 }
 
@@ -542,11 +578,12 @@ mod tests {
         );
         assert!(screen_changed.swap(false, Ordering::Relaxed));
         assert_eq!(events.try_recv().ok(), Some(PaneEvent::Output(PaneId(1))));
-        assert_eq!(events.try_recv().ok(), Some(PaneEvent::Exited(PaneId(1))));
+        assert_eq!(events.try_recv().ok(), None);
     }
 
     #[test]
-    fn read_loop_eof_emits_exited() {
+    fn read_loop_eof_emits_nothing() {
+        // The reaper owns exit reporting; EOF alone is not an exit event.
         let (vpty, writer, _bytes, screen_changed, tx, events) = session_wiring();
         read_loop(
             &vpty,
@@ -556,7 +593,7 @@ mod tests {
             PaneId(1),
             std::io::Cursor::new(Vec::new()),
         );
-        assert_eq!(events.try_recv().ok(), Some(PaneEvent::Exited(PaneId(1))));
+        assert_eq!(events.try_recv().ok(), None);
         assert!(!screen_changed.swap(false, Ordering::Relaxed));
     }
 
@@ -572,7 +609,7 @@ mod tests {
             PaneId(1),
             std::io::Cursor::new(b"a".to_vec()),
         );
-        assert_eq!(events.try_recv().ok(), Some(PaneEvent::Exited(PaneId(1))));
+        assert_eq!(events.try_recv().ok(), None);
 
         screen_changed.store(false, Ordering::Relaxed);
         read_loop(
@@ -584,7 +621,7 @@ mod tests {
             std::io::Cursor::new(b"b".to_vec()),
         );
         assert_eq!(events.try_recv().ok(), Some(PaneEvent::Output(PaneId(1))));
-        assert_eq!(events.try_recv().ok(), Some(PaneEvent::Exited(PaneId(1))));
+        assert_eq!(events.try_recv().ok(), None);
     }
 
     #[test]
