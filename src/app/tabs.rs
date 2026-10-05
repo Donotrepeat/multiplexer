@@ -1,5 +1,6 @@
 use std::sync::mpsc::Sender;
 
+use crate::app::config::TerminalConfig;
 use crate::app::events::{PaneEvent, PaneId};
 use crate::app::pane::Pane;
 use ratatui::{Frame, layout::Rect};
@@ -28,9 +29,15 @@ fn active_after_removal(active: usize, len: usize) -> usize {
 }
 
 impl Tab {
-    pub fn new(row: u16, col: u16, id: PaneId, tx: Sender<PaneEvent>) -> Result<Self> {
+    pub fn new(
+        row: u16,
+        col: u16,
+        id: PaneId,
+        tx: Sender<PaneEvent>,
+        terminal: &TerminalConfig,
+    ) -> Result<Self> {
         log::debug!("screen {row},{col}");
-        let panes = vec![Pane::new(row, col, id, tx)?];
+        let panes = vec![Pane::new(row, col, id, tx, terminal)?];
 
         Ok(Self {
             panes,
@@ -114,13 +121,13 @@ mod tests {
         fn pane(&mut self) -> Result<Pane> {
             let id = PaneId(self.next);
             self.next += 1;
-            Pane::new(4, 20, id, self.tx.clone())
+            Pane::new(4, 20, id, self.tx.clone(), &TerminalConfig::default())
         }
 
         fn tab(&mut self) -> Result<Tab> {
             let id = PaneId(self.next);
             self.next += 1;
-            Tab::new(4, 20, id, self.tx.clone())
+            Tab::new(4, 20, id, self.tx.clone(), &TerminalConfig::default())
         }
     }
 

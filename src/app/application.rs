@@ -1,4 +1,5 @@
 use crate::app::command::{self, Command};
+use crate::app::config::Config;
 use crate::app::events::{PaneEvent, PaneId};
 use crate::app::pane::Pane;
 use crate::app::tabs::Tab;
@@ -27,10 +28,13 @@ pub struct App {
     /// Whether the next loop iteration needs to redraw.
     dirty: bool,
     last_size: (u16, u16),
+    config: Config,
 }
 
 impl App {
     pub fn new() -> Result<Self> {
+        let config = Config::load()?;
+
         let (events_tx, events_rx) = mpsc::channel();
         let (term_cols, term_rows) = size()?;
         let term_rows = term_rows.max(1);
@@ -46,10 +50,12 @@ impl App {
             next_pane_id: 0,
             dirty: true,
             last_size: (term_cols, term_rows),
+            config,
         };
         let id = app.next_pane_id();
         let tx = app.events_tx.clone();
-        app.tabs.push(Tab::new(rows, cols, id, tx)?);
+        app.tabs
+            .push(Tab::new(rows, cols, id, tx, &app.config.terminal)?);
         Ok(app)
     }
 
@@ -91,7 +97,11 @@ impl App {
             match crossterm::event::read()? {
                 Event::Key(key) => {
                     let is_alternate = self.active_pane().in_alternated_state();
-                    self.execute(command::resolve(key, is_alternate))?;
+                    self.execute(command::resolve(
+                        key,
+                        is_alternate,
+                        &self.config.keybindings,
+                    ))?;
                 }
                 Event::Resize(_, _) => self.dirty = true,
                 _ => {}
@@ -157,7 +167,8 @@ impl App {
                 let id = self.next_pane_id();
                 let tx = self.events_tx.clone();
 
-                self.tabs.push(Tab::new(rows, cols, id, tx)?);
+                self.tabs
+                    .push(Tab::new(rows, cols, id, tx, &self.config.terminal)?);
 
                 self.active_tab = self.tabs.len() - 1;
             }
@@ -216,7 +227,7 @@ impl App {
                 let new_cols = cols.max(2);
                 let id = self.next_pane_id();
                 let tx = self.events_tx.clone();
-                let new_pane = Pane::new(new_rows, new_cols, id, tx)?;
+                let new_pane = Pane::new(new_rows, new_cols, id, tx, &self.config.terminal)?;
                 let tab = self.get_mut_tab();
                 tab.panes.push(new_pane);
                 tab.active = tab.panes.len() - 1;

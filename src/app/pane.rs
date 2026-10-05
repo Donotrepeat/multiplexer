@@ -1,5 +1,6 @@
 use std::sync::mpsc::Sender;
 
+use crate::app::config::TerminalConfig;
 use anyhow::Result;
 use crossterm::event::KeyEvent;
 use ratatui::Frame;
@@ -42,10 +43,16 @@ pub struct Pane {
 }
 
 impl Pane {
-    pub fn new(rows: u16, cols: u16, id: PaneId, tx: Sender<PaneEvent>) -> Result<Self> {
+    pub fn new(
+        rows: u16,
+        cols: u16,
+        id: PaneId,
+        tx: Sender<PaneEvent>,
+        terminal: &TerminalConfig,
+    ) -> Result<Self> {
         Ok(Pane {
             id,
-            session: PtySession::spawn(rows, cols, id, tx)?,
+            session: PtySession::spawn(rows, cols, id, tx, terminal)?,
             title: "~".to_string(),
             exited: false,
             dirty: true,
@@ -216,7 +223,7 @@ mod tests {
     #[test]
     fn pane_exit_is_reported_by_the_reaper() -> Result<()> {
         let (tx, rx) = mpsc::channel();
-        let mut pane = Pane::new(4, 20, PaneId(7), tx)?;
+        let mut pane = Pane::new(4, 20, PaneId(7), tx, &TerminalConfig::default())?;
 
         for key in "exit\r".chars() {
             let code = if key == '\r' {
@@ -245,7 +252,7 @@ mod tests {
     #[test]
     fn idle_render_reuses_the_cached_screen() -> Result<()> {
         let (tx, _rx) = mpsc::channel();
-        let mut pane = Pane::new(4, 20, PaneId(0), tx)?;
+        let mut pane = Pane::new(4, 20, PaneId(0), tx, &TerminalConfig::default())?;
         SCREEN_CLONES.store(0, Ordering::Relaxed);
 
         let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(20, 10))?;

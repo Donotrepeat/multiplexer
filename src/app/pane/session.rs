@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
+use crate::app::config::TerminalConfig;
 use crate::app::events::{PaneEvent, PaneId};
 use crate::app::util::lock_or_recover;
 
@@ -200,7 +201,13 @@ impl PtySession {
             .alternate_screen()
     }
 
-    pub(super) fn spawn(rows: u16, cols: u16, id: PaneId, tx: Sender<PaneEvent>) -> Result<Self> {
+    pub(super) fn spawn(
+        rows: u16,
+        cols: u16,
+        id: PaneId,
+        tx: Sender<PaneEvent>,
+        terminal: &TerminalConfig,
+    ) -> Result<Self> {
         let pair = native_pty_system().openpty(PtySize {
             rows,
             cols,
@@ -208,8 +215,12 @@ impl PtySession {
             pixel_height: 0,
         })?;
 
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into());
-        let cmd = CommandBuilder::new(shell);
+        let shell = terminal.shell();
+        let mut cmd = CommandBuilder::new(&shell);
+        cmd.cwd(terminal.working_dir());
+        for (k, v) in terminal.env() {
+            cmd.env(k, v);
+        }
         let child = pair.slave.spawn_command(cmd)?;
         drop(pair.slave);
         let killer = child.clone_killer();
