@@ -39,8 +39,6 @@ impl Config {
 }
 
 pub struct KeyMap {
-    /// Resolved bindings layered on top of built-in defaults.
-    /// User bindings win; unrecognized keys/commands are logged and ignored.
     bindings: HashMap<KeySpec, Command>,
 }
 

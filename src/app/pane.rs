@@ -3,11 +3,11 @@ use std::sync::mpsc::Sender;
 use crate::app::config::TerminalConfig;
 use anyhow::Result;
 use crossterm::event::KeyEvent;
-use ratatui::Frame;
 use ratatui::layout::{Margin, Rect};
 use ratatui::prelude::Position;
 use ratatui::style::{Color, Stylize};
 use ratatui::widgets::{Block, Paragraph};
+use ratatui::Frame;
 
 use crate::app::events::{PaneEvent, PaneId};
 
@@ -19,7 +19,6 @@ use keys::key_to_bytes;
 use render::vterm_to_ratatui;
 use session::PtySession;
 
-/// Prefix `[exited]` unless the title already carries it.
 fn exited_label(title: &str) -> String {
     if title.starts_with("[exited]") {
         title.to_string()
@@ -33,12 +32,7 @@ pub struct Pane {
     session: PtySession,
     pub title: String,
     exited: bool,
-    /// Set by `ack_output` or a layout change; makes the next render refresh
-    /// `snapshot` instead of reusing it.
     dirty: bool,
-    /// Last vt100 screen handed to the renderer. Cloning the whole screen
-    /// (scrollback included) every frame is the expensive part, so it is only
-    /// refreshed when something actually changed.
     snapshot: Option<vt100::Screen>,
 }
 
@@ -64,13 +58,6 @@ impl Pane {
         self.id
     }
 
-    /// Forward a key event to the pane's PTY as the bytes a real terminal
-    /// would send for it. No-op once the child has exited — even if a
-    /// grandchild still holds the pty slave open and its output keeps
-    /// rendering, the foreground child is gone and the pane is closed from
-    /// the user's perspective. A write failure (the child died between the
-    /// exit event and this write) is logged rather than brought down as an
-    /// app error.
     pub fn write_key(&mut self, key: KeyEvent) -> Result<()> {
         if self.exited {
             return Ok(());
@@ -81,8 +68,6 @@ impl Pane {
         Ok(())
     }
 
-    /// Paste clipboard text into the pane's PTY. Framing follows the
-    /// foreground application's bracketed-paste mode; see
     /// [`PtySession::paste`](session::PtySession::paste).
     pub fn paste(&mut self, text: &str) -> Result<()> {
         if self.exited {
@@ -94,8 +79,6 @@ impl Pane {
         Ok(())
     }
 
-    /// Apply a title reported by the foreground program. A title that arrives
-    /// after the child exited keeps the `[exited]` marker.
     pub fn set_title(&mut self, title: String) {
         self.title = if self.exited {
             exited_label(&title)
@@ -104,16 +87,11 @@ impl Pane {
         };
     }
 
-    /// Mark the child as exited and tag the title, whichever order the
-    /// `Title` and `Exited` events happen to arrive in.
     pub fn mark_exited(&mut self) {
         self.exited = true;
         self.title = exited_label(&self.title);
     }
 
-    /// Acknowledge an `Output` event: clears the session's coalescing flag so
-    /// the next chunk of output wakes the UI loop again, and schedules the
-    /// snapshot refresh for the next frame.
     pub fn ack_output(&mut self) {
         self.session.take_screen_changed();
         self.dirty = true;
@@ -173,9 +151,6 @@ impl Pane {
 
     pub fn render_pane(&mut self, frame: &mut Frame, area: Rect, is_active: bool) {
         if self.dirty || self.snapshot.is_none() {
-            // Clear the coalescing flag before cloning so output that lands
-            // after the snapshot still wakes the loop; output that lands
-            // before it is part of the clone either way.
             self.session.take_screen_changed();
             self.snapshot = Some(self.session.screen());
             self.dirty = false;
