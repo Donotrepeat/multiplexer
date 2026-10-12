@@ -197,10 +197,23 @@ Acceptance:
 ### M2: Auto-save/restore default workspace
 
 1. Create `src/app/workspace.rs` with `Workspace`, `TabLayout`, `PaneLayout`.
-2. Add serde support for `Grid`.
-3. On startup, try to load `default` workspace; fall back to single default tab.
-4. On exit, capture current state and save to `default`.
-5. Tests: round-trip a workspace through TOML; restore spawns the expected number of panes.
+2. Capture spawn-time metadata in `PtySession`: the resolved `shell: PathBuf`,
+   the `spawn_dir: PathBuf` passed to `CommandBuilder::cwd`, and `pid: u32`
+   (via `child.pid()` taken *before* the child is moved into the reaper thread).
+3. Add a `live_cwd()` probe: read `/proc/{pid}/cwd` only while the child is
+   unreaped — `Pane::exited` (set from `PaneEvent::Exited`, which fires after
+   `wait()`) guards against PID reuse. On any failure return `spawn_dir`.
+   The probe takes no locks, keeping `Workspace::from_app` consistent with its
+   "cheap; does not touch PTY internals" contract.
+4. Expose `Pane::shell()` and `Pane::working_dir()` (live cwd with fallback) and
+   have `Workspace::from_app` map panes in list order to `PaneLayout`.
+5. Add serde support for `Grid`.
+6. On startup, try to load `default` workspace; fall back to single default tab.
+   `load`/`save` must use `sessions/{name}.toml` (fixes the workspace.rs path
+   bug where `join(name).join(".toml")` built `.../default/.toml`).
+7. On exit, capture current state and save to `default`.
+8. Tests: round-trip a workspace through TOML; restore spawns the expected number
+   of panes; the cwd probe returns the spawn dir when the child is gone.
 
 Acceptance:
 - Open multiplexer, create two tabs with panes, quit, reopen: layout restores.
@@ -223,7 +236,16 @@ Acceptance:
 
 1. **Config path name**: `~/.config/multiplexer/config.toml` vs a dotfile in `$HOME`. The XDG path is recommended; confirm if you want legacy support.
 2. **Session storage path**: `~/.local/state/multiplexer/sessions/` is preferred for state. Acceptable?
-3. **Working directory capture**: capture each pane's actual `cwd` (requires `/proc/<pid>/cwd` or `lsof` on Unix) vs just using the configured `terminal.working_dir`. Actual `cwd` is more useful but OS-specific. For M2, use `terminal.working_dir`; M3 can add real cwd detection.
+3. **Working directory capture**: **Decided — probe the live cwd via `/proc/<pid>/cwd`,
+   falling back to the spawn-time cwd.** `PtySession::spawn_command` runs the shell
+   directly, so the child PID *is* the shell, and the kernel keeps `/proc/<pid>/cwd`
+   current as the user types `cd` (the same trick tmux uses for `pane_current_path`).
+   The PID and spawn-time shell/cwd must be captured in `PtySession` at spawn, before
+   `child` is moved into the reaper thread. `/proc` is Linux-only: gate the probe
+   behind `#[cfg(target_os = "linux")]` and fall back to the spawn-time cwd
+   elsewhere. OSC 7 tracking (via vt100's `unhandled_osc`) is deferred; it is more
+   correct through nested sessions but requires shell integration the user must
+   install.
 4. **Default auto-save on exit**: should quitting always overwrite `default`, or only when the user has opted in? Recommended: always auto-save `default`; explicit named saves are opt-in.
 5. **Existing `PtySession` name**: keep it or rename to `Pty` to free the word "session" for the user-facing feature? Renaming is a small refactor; it reduces confusion but adds diff noise.
 
@@ -235,6 +257,11 @@ Acceptance:
 - **Workspace save on panic**: the panic hook disables raw mode first; workspace save should happen only on normal exit, not in the panic hook.
 - **Restore with missing shell**: if a saved shell path no longer exists, fall back to `Config::terminal.shell()` then `$SHELL` then `/bin/bash`.
 - **Concurrency**: workspace save reads `App` state while background threads own panes. Only serializable metadata is captured; no PTY locks needed.
+- **Stale saved paths**: `live_cwd` can yield a directory that no longer exists
+  (e.g. deleted then `cd`'d away) and the saved shell may be uninstalled.
+  `apply` must validate both and fall back to `Config::terminal` values, then
+  `$SHELL` / current dir. Keep the fallbacks out of the saved file — bake them
+  in at apply time so a dead path never gets frozen into the session.
 
 ---
 
