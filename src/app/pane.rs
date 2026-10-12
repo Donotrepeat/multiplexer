@@ -3,11 +3,11 @@ use std::sync::mpsc::Sender;
 use crate::app::config::TerminalConfig;
 use anyhow::Result;
 use crossterm::event::KeyEvent;
+use ratatui::Frame;
 use ratatui::layout::{Margin, Rect};
 use ratatui::prelude::Position;
 use ratatui::style::{Color, Stylize};
 use ratatui::widgets::{Block, Paragraph};
-use ratatui::Frame;
 
 use crate::app::events::{PaneEvent, PaneId};
 

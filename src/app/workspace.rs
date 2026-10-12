@@ -1,6 +1,6 @@
+use crate::App;
 use crate::app::config::Config;
 use crate::app::tabs::Grid;
-use crate::App;
 use anyhow::Result;
 use serde::Deserialize;
 use std::path::PathBuf;
