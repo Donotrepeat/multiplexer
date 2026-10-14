@@ -3,7 +3,7 @@ use std::sync::mpsc::Sender;
 use crate::app::config::TerminalConfig;
 use crate::app::events::{PaneEvent, PaneId};
 use crate::app::pane::Pane;
-use ratatui::{Frame, layout::Rect};
+use ratatui::{layout::Rect, Frame};
 
 use anyhow::Result;
 
@@ -51,10 +51,6 @@ impl Tab {
             return;
         }
         let rects = self.rects(area);
-        // The single source of truth for pane sizing: every pane's virtual
-        // terminal is resized to its renderable rect (the block border takes
-        // one cell on each side). Running this for every tab — not just the
-        // visible one — keeps background shells' sizes and SIGWINCH current.
         for (i, pane) in self.panes.iter_mut().enumerate() {
             if let Some(&rect) = rects.get(i) {
                 pane.resize(

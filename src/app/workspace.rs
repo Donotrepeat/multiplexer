@@ -20,12 +20,16 @@ pub struct TabLayout {
     pub panes: Vec<PaneLayout>,
 }
 
-
 impl TabLayout {
-    pub fn save_tab(tab: &Tab) -> Self{
+    pub fn save_tab(tab: &Tab) -> Self {
         let active = tab.active;
-        let panes = tab.panes.iter().map(
-            |pane| PaneLayout{shell: pane.title, working_dir: pane.})
+        let panes = tab.panes.iter().map(|pane| pane.get_shell_info()).collect();
+
+        TabLayout {
+            grid: tab.grid,
+            active_pane: active,
+            panes,
+        }
     }
 }
 
@@ -55,9 +59,17 @@ impl Workspace {
     pub fn save(name: &str, workspace: &Self) -> Result<()>;
 
     /// Capture the current app state. Cheap; does not touch PTY internals.
-    pub fn from_app(app: &App) -> Self{
+    pub fn from_app(app: &App) -> Self {
         let active = app.active_tab;
-        let tabs = app.tabs.
+        let tabs = app
+            .tabs
+            .iter()
+            .map(|tab| TabLayout::save_tab(&tab))
+            .collect();
+        Workspace {
+            active_tab: active,
+            tabs,
+        }
     }
 
     /// Apply a workspace to an empty app, spawning panes as configured.

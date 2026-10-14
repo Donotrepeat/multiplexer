@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
+use std::path::PathBuf;
 
 use crate::app::config::TerminalConfig;
 use crate::app::events::{PaneEvent, PaneId};
@@ -192,6 +193,9 @@ pub(super) struct PtySession {
     screen_changed: Arc<AtomicBool>,
     rows: u16,
     cols: u16,
+    pub shell: PathBuf, // resolved at spawn, before the &TerminalConfig borrow ends
+    pub spawn_dir: PathBuf, // the cwd the child was actually started in
+    pid: u32,           // child.pid() taken *before* moving it into the reaper
 }
 
 impl PtySession {
@@ -222,6 +226,7 @@ impl PtySession {
             cmd.env(k, v);
         }
         let child = pair.slave.spawn_command(cmd)?;
+        let pid = child.process_id().unwrap_or_default();
         drop(pair.slave);
         let killer = child.clone_killer();
 
@@ -252,12 +257,6 @@ impl PtySession {
         let reaped = Arc::new(AtomicBool::new(false));
         let reaped_clone = Arc::clone(&reaped);
         let reaper_thread = std::thread::spawn(move || {
-            // Reaps the child so no zombies remain, and reports the exit
-            // even when a background grandchild keeps the pty slave open
-            // (which would otherwise delay the reader's EOF indefinitely).
-            // The pane is closed from the user's perspective from this
-            // point on: a grandchild's output is still rendered, but input
-            // is no longer forwarded to it.
             let mut child = child;
             let _ = child.wait();
             reaped_clone.store(true, Ordering::Release);
@@ -275,6 +274,9 @@ impl PtySession {
             screen_changed,
             rows,
             cols,
+            spawn_dir: terminal.working_dir(),
+            shell: shell,
+            pid,
         })
     }
 
