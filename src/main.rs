@@ -6,6 +6,7 @@ mod app;
 mod logging;
 
 use app::application::App;
+use app::workspace::{DEFAULT_WORKSPACE, Workspace};
 
 fn set_terminal_title(title: &str) {
     print!("\x1B]0;{}\x07", title);
@@ -29,6 +30,13 @@ fn main() -> Result<()> {
 
     let mut app = App::new()?;
     ratatui::run(|terminal| app.run(terminal))?;
+
+    // Persist the workspace on clean exit only, never in the panic hook.
+    // A failed save is logged, not fatal.
+    let workspace = Workspace::from_app(&app);
+    if let Err(err) = Workspace::save(DEFAULT_WORKSPACE, &workspace) {
+        log::warn!("failed to save workspace '{DEFAULT_WORKSPACE}': {err}");
+    }
 
     disable_raw_mode()?;
     logging::dump();

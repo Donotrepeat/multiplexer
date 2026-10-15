@@ -3,7 +3,7 @@ use std::sync::mpsc::Sender;
 use crate::app::config::TerminalConfig;
 use crate::app::events::{PaneEvent, PaneId};
 use crate::app::pane::Pane;
-use ratatui::{layout::Rect, Frame};
+use ratatui::{Frame, layout::Rect};
 
 use anyhow::Result;
 

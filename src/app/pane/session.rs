@@ -275,7 +275,7 @@ impl PtySession {
             rows,
             cols,
             spawn_dir: terminal.working_dir(),
-            shell: shell,
+            shell,
             pid,
         })
     }
@@ -309,6 +309,30 @@ impl PtySession {
 
     pub(super) fn size(&self) -> (u16, u16) {
         (self.rows, self.cols)
+    }
+
+    /// The child's current working directory, probed from the kernel the
+    /// same way tmux reads `pane_current_path`. Any failure — the child
+    /// gone, no `/proc` — falls back to the directory it was spawned in.
+    /// Must not be called after the child has been reaped: its pid is
+    /// then free for reuse and could name an unrelated process.
+    pub(super) fn live_cwd(&self) -> PathBuf {
+        match self.probe_cwd() {
+            Some(cwd) => cwd,
+            None => self.spawn_dir.clone(),
+        }
+    }
+
+    /// `/proc/{pid}/cwd`, readable while the child owns its pid. Linux
+    /// only; other platforms have no `/proc` and always fall back.
+    #[cfg(target_os = "linux")]
+    fn probe_cwd(&self) -> Option<PathBuf> {
+        std::fs::read_link(format!("/proc/{}/cwd", self.pid)).ok()
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn probe_cwd(&self) -> Option<PathBuf> {
+        None
     }
 
     /// Resize the backing PTY and the vt100 screen so both stay in sync.
@@ -693,6 +717,33 @@ mod tests {
         // The reply is buffered by the callbacks and only reaches the writer
         // through the post-`process` flush.
         assert!(vpty.lock().unwrap().callbacks_mut().take_reply().is_empty());
+    }
+
+    #[test]
+    fn live_cwd_falls_back_to_spawn_dir_when_the_child_is_gone() -> Result<()> {
+        let (tx, rx) = mpsc::channel();
+        let spawn_dir = PathBuf::from("/tmp");
+        let terminal = TerminalConfig {
+            working_dir: Some(spawn_dir.clone()),
+            ..TerminalConfig::default()
+        };
+        let session = PtySession::spawn(4, 20, PaneId(1), tx, &terminal)?;
+        session.write_bytes(b"exit\r")?;
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match rx.recv_timeout(remaining) {
+                Ok(PaneEvent::Exited(_)) => break,
+                Ok(_) => continue,
+                Err(err) => panic!("no Exited event from the reaper: {err}"),
+            }
+        }
+
+        // The child is reaped, its pid no longer names it: the probe must
+        // not return some other process's cwd.
+        assert_eq!(session.live_cwd(), spawn_dir);
+        Ok(())
     }
 
     #[test]

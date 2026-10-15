@@ -4,11 +4,11 @@ use crate::app::config::TerminalConfig;
 use crate::app::workspace::PaneLayout;
 use anyhow::Result;
 use crossterm::event::KeyEvent;
+use ratatui::Frame;
 use ratatui::layout::{Margin, Rect};
 use ratatui::prelude::Position;
 use ratatui::style::{Color, Stylize};
 use ratatui::widgets::{Block, Paragraph};
-use ratatui::Frame;
 
 use crate::app::events::{PaneEvent, PaneId};
 
@@ -105,7 +105,15 @@ impl Pane {
     pub fn get_shell_info(&self) -> PaneLayout {
         PaneLayout {
             shell: Some(self.session.shell.clone()),
-            working_dir: Some(self.session.spawn_dir.clone()),
+            // The live cwd while the pane runs, so a saved session reopens
+            // where the user actually left off. Once the pane has exited
+            // its pid is free for reuse, so the probe is skipped and the
+            // spawn dir is recorded instead.
+            working_dir: Some(if self.exited {
+                self.session.spawn_dir.clone()
+            } else {
+                self.session.live_cwd()
+            }),
         }
     }
 
@@ -229,6 +237,46 @@ mod tests {
                 Err(err) => panic!("no Exited event from the reaper: {err}"),
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn live_pane_reports_its_current_directory() -> Result<()> {
+        let (tx, _rx) = mpsc::channel();
+        // A directory distinct from this process's cwd, so the probe must
+        // really have followed the child, not echoed our own cwd.
+        let cwd = std::env::temp_dir();
+        let terminal = TerminalConfig {
+            working_dir: Some(cwd.clone()),
+            ..TerminalConfig::default()
+        };
+        let pane = Pane::new(4, 20, PaneId(0), tx, &terminal)?;
+
+        // The child needs a moment to exec; poll until the probe sees it.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if pane.get_shell_info().working_dir == Some(cwd.clone()) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "cwd probe never saw the child");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn exited_pane_reports_its_spawn_dir() -> Result<()> {
+        let (tx, _rx) = mpsc::channel();
+        let spawn_dir = std::env::temp_dir();
+        let terminal = TerminalConfig {
+            working_dir: Some(spawn_dir.clone()),
+            ..TerminalConfig::default()
+        };
+        let mut pane = Pane::new(4, 20, PaneId(1), tx, &terminal)?;
+        pane.mark_exited();
+
+        // An exited pane must not probe: its pid is free for reuse.
+        assert_eq!(pane.get_shell_info().working_dir, Some(spawn_dir));
         Ok(())
     }
 

@@ -4,6 +4,7 @@ use crate::app::events::{PaneEvent, PaneId};
 use crate::app::pane::Pane;
 use crate::app::tabs::Tab;
 use crate::app::util::initialize_pane_size;
+use crate::app::workspace::{DEFAULT_WORKSPACE, SpawnContext, Workspace};
 use anyhow::Result;
 use arboard::Clipboard;
 use crossterm::event::{Event, KeyEvent};
@@ -52,10 +53,25 @@ impl App {
             last_size: (term_cols, term_rows),
             config,
         };
-        let id = app.next_pane_id();
-        let tx = app.events_tx.clone();
-        app.tabs
-            .push(Tab::new(rows, cols, id, tx, &app.config.terminal)?);
+        // Restore the default workspace if one was saved; a workspace that
+        // fails to load (corrupt file, unreadable) must not stop startup.
+        let workspace = match Workspace::load(DEFAULT_WORKSPACE) {
+            Ok(workspace) => workspace,
+            Err(err) => {
+                log::warn!("failed to load workspace '{DEFAULT_WORKSPACE}': {err}");
+                Workspace::default()
+            }
+        };
+        if !workspace.tabs.is_empty() {
+            let mut spawn = app.spawn_context(rows, cols);
+            workspace.apply(&mut app, &mut spawn)?;
+        }
+        if app.tabs.is_empty() {
+            let id = app.next_pane_id();
+            let tx = app.events_tx.clone();
+            app.tabs
+                .push(Tab::new(rows, cols, id, tx, &app.config.terminal)?);
+        }
         Ok(app)
     }
 
@@ -79,6 +95,25 @@ impl App {
         let id = PaneId(self.next_pane_id);
         self.next_pane_id += 1;
         id
+    }
+
+    /// Sync the id counter after `Workspace::apply` spawned panes through a
+    /// [`SpawnContext`], so later panes never reuse a restored pane's id.
+    pub fn set_next_pane_id(&mut self, next: u64) {
+        self.next_pane_id = next;
+    }
+
+    /// Everything `Workspace::apply` needs to spawn panes: the pane size,
+    /// the event channel, the next free pane id, and the base terminal
+    /// config saved overrides are layered onto.
+    fn spawn_context(&self, rows: u16, cols: u16) -> SpawnContext {
+        SpawnContext::new(
+            rows,
+            cols,
+            self.events_tx.clone(),
+            self.next_pane_id,
+            &self.config.terminal,
+        )
     }
 
     /// Wait briefly for a pane event, then drain everything pending: pane

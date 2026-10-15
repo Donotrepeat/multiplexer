@@ -1,8 +1,9 @@
 use ratatui::layout::Rect;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use strum::{EnumIter, IntoEnumIterator};
 
-#[derive(EnumIter, Debug, Clone, Copy, Deserialize, Default)]
+#[derive(EnumIter, Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Grid {
     #[default]
     Horizontal,
