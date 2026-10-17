@@ -1,4 +1,5 @@
 use crate::app::command::Command;
+use crate::app::workspace::valid_session_name;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde::de::{MapAccess, Visitor};
@@ -46,7 +47,7 @@ impl KeyMap {
     pub fn resolve(&self, key: KeyEvent, alternate: bool) -> Command {
         let spec = KeySpec::from(key);
         if let Some(command) = self.bindings.get(&spec) {
-            return *command;
+            return command.clone();
         }
 
         // Char bindings match even with extra modifiers (Alt+Shift+c still
@@ -77,7 +78,7 @@ impl KeyMap {
                 }
             }
             if let Some(command) = best {
-                return *command;
+                return command.clone();
             }
         }
 
@@ -255,7 +256,28 @@ impl FromStr for Command {
             "scroll_page_up" => Ok(Command::ScrollPageUp),
             "scroll_page_down" => Ok(Command::ScrollPageDown),
             "paste" => Ok(Command::Paste),
-            _ => Err(format!("unknown command: {s}")),
+            "save_session" => Ok(Command::SaveSession(None)),
+            "load_session" => Ok(Command::LoadSession(None)),
+            "next_session" => Ok(Command::NextSession),
+            "prev_session" => Ok(Command::PrevSession),
+            _ => {
+                if let Some((save, name)) = s
+                    .strip_prefix("save_session:")
+                    .map(|n| (true, n))
+                    .or_else(|| s.strip_prefix("load_session:").map(|n| (false, n)))
+                {
+                    if !valid_session_name(name) {
+                        return Err(format!("invalid session name: {name}"));
+                    }
+                    let name = Some(name.to_string());
+                    return Ok(if save {
+                        Command::SaveSession(name)
+                    } else {
+                        Command::LoadSession(name)
+                    });
+                }
+                Err(format!("unknown command: {s}"))
+            }
         }
     }
 }
@@ -393,5 +415,48 @@ alt-c = "not_a_command"
         let config: Config = toml::from_str(toml).unwrap();
         let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::ALT);
         assert_eq!(config.keybindings.resolve(key, false), Command::NewTab);
+    }
+
+    #[test]
+    fn session_commands_parse_with_and_without_names() {
+        assert_eq!(
+            "save_session".parse::<Command>(),
+            Ok(Command::SaveSession(None))
+        );
+        assert_eq!(
+            "load_session".parse::<Command>(),
+            Ok(Command::LoadSession(None))
+        );
+        assert_eq!("next_session".parse::<Command>(), Ok(Command::NextSession));
+        assert_eq!("prev_session".parse::<Command>(), Ok(Command::PrevSession));
+        assert_eq!(
+            "save_session:work".parse::<Command>(),
+            Ok(Command::SaveSession(Some("work".to_string())))
+        );
+        assert_eq!(
+            "load_session:work".parse::<Command>(),
+            Ok(Command::LoadSession(Some("work".to_string())))
+        );
+    }
+
+    #[test]
+    fn session_commands_reject_unsafe_names() {
+        assert!("save_session:".parse::<Command>().is_err());
+        assert!("save_session:../evil".parse::<Command>().is_err());
+        assert!("load_session:a/b".parse::<Command>().is_err());
+    }
+
+    #[test]
+    fn named_session_binding_resolves_from_config() {
+        let toml = r#"
+[keybindings]
+alt-s = "save_session:work"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let key = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::ALT);
+        assert_eq!(
+            config.keybindings.resolve(key, false),
+            Command::SaveSession(Some("work".to_string()))
+        );
     }
 }

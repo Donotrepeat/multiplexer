@@ -1,9 +1,7 @@
 use crate::app::config::KeyMap;
 use crossterm::event::KeyEvent;
-use serde::Deserialize;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     Quit,
     NewTab,
@@ -18,9 +16,19 @@ pub enum Command {
     ScrollPageUp,
     ScrollPageDown,
     Paste,
+    /// Save the layout to a session file. `None` saves under the current
+    /// session's name; `Some(name)` is "save as" and also makes that the
+    /// current session.
+    SaveSession(Option<String>),
+    /// Replace the layout with a saved session. `None` reloads the current
+    /// session from disk, discarding changes made since the last save.
+    LoadSession(Option<String>),
+    /// Switch to the next/previous session on disk (sorted), saving the
+    /// current one first.
+    NextSession,
+    PrevSession,
     /// Not a multiplexer hotkey: forward the key to the active pane's PTY.
     /// Never read from config; constructed at runtime only.
-    #[serde(skip)]
     SendKey(KeyEvent),
 }
 

@@ -4,7 +4,7 @@ use crate::app::events::{PaneEvent, PaneId};
 use crate::app::pane::Pane;
 use crate::app::tabs::Tab;
 use crate::app::util::initialize_pane_size;
-use crate::app::workspace::{DEFAULT_WORKSPACE, SpawnContext, Workspace};
+use crate::app::workspace::{SpawnContext, Workspace, list_sessions, next_in_cycle};
 use anyhow::Result;
 use arboard::Clipboard;
 use crossterm::event::{Event, KeyEvent};
@@ -30,10 +30,12 @@ pub struct App {
     dirty: bool,
     last_size: (u16, u16),
     config: Config,
+    /// The session this run saves to on exit and on session switches.
+    session_name: String,
 }
 
 impl App {
-    pub fn new() -> Result<Self> {
+    pub fn new(session_name: &str) -> Result<Self> {
         let config = Config::load()?;
 
         let (events_tx, events_rx) = mpsc::channel();
@@ -52,13 +54,14 @@ impl App {
             dirty: true,
             last_size: (term_cols, term_rows),
             config,
+            session_name: session_name.to_string(),
         };
-        // Restore the default workspace if one was saved; a workspace that
-        // fails to load (corrupt file, unreadable) must not stop startup.
-        let workspace = match Workspace::load(DEFAULT_WORKSPACE) {
+        // Restore the saved workspace if one exists; a workspace that fails
+        // to load (corrupt file, unreadable) must not stop startup.
+        let workspace = match Workspace::load(session_name) {
             Ok(workspace) => workspace,
             Err(err) => {
-                log::warn!("failed to load workspace '{DEFAULT_WORKSPACE}': {err}");
+                log::warn!("failed to load workspace '{session_name}': {err}");
                 Workspace::default()
             }
         };
@@ -67,12 +70,79 @@ impl App {
             workspace.apply(&mut app, &mut spawn)?;
         }
         if app.tabs.is_empty() {
-            let id = app.next_pane_id();
-            let tx = app.events_tx.clone();
-            app.tabs
-                .push(Tab::new(rows, cols, id, tx, &app.config.terminal)?);
+            let tab = app.fresh_tab(rows, cols)?;
+            app.tabs.push(tab);
         }
         Ok(app)
+    }
+
+    /// Persist the current layout under the current session name. Save
+    /// failures are logged, never fatal: this runs on exit and before
+    /// session switches, where crashing would be far worse than losing a
+    /// save.
+    pub fn save_workspace(&self) {
+        let workspace = Workspace::from_app(self);
+        if let Err(err) = Workspace::save(&self.session_name, &workspace) {
+            log::warn!("failed to save workspace '{}': {err}", self.session_name);
+        }
+    }
+
+    /// Replace the current layout with the session stored under `name`.
+    /// Switching to a different session saves the current one first, so
+    /// cycling never loses work; reloading the *current* name skips that
+    /// save, making it a revert to the on-disk state. A failed or missing
+    /// file keeps the current layout; a session that applies badly (or is
+    /// empty) falls back to a single fresh tab rather than leaving the app
+    /// with nothing to display.
+    fn switch_session(&mut self, name: &str) {
+        let workspace = match Workspace::load(name) {
+            Ok(workspace) => workspace,
+            Err(err) => {
+                log::warn!("failed to load session '{name}': {err}");
+                return;
+            }
+        };
+        if name != self.session_name {
+            self.save_workspace();
+        }
+
+        let (rows, cols) = initialize_pane_size(self.last_size.1, self.last_size.0);
+        let mut spawn = self.spawn_context(rows, cols);
+        // Dropping the old tabs tears down their panes' PTYs (bounded joins,
+        // see PtySession::drop) before the restored ones take their place.
+        self.tabs.clear();
+        if let Err(err) = workspace.apply(self, &mut spawn) {
+            log::warn!("failed to restore session '{name}': {err}");
+        }
+        if self.tabs.is_empty() {
+            match self.fresh_tab(rows, cols) {
+                Ok(tab) => self.tabs.push(tab),
+                Err(err) => {
+                    log::error!("failed to spawn a fallback tab: {err}");
+                    self.running = false;
+                    return;
+                }
+            }
+        }
+        self.active_tab = self.active_tab.min(self.tabs.len() - 1);
+        self.session_name = name.to_string();
+        self.dirty = true;
+    }
+
+    /// Switch to the session `delta` steps away in the sorted list on disk.
+    fn cycle_session(&mut self, delta: isize) {
+        let Some(name) = next_in_cycle(&list_sessions(), &self.session_name, delta) else {
+            return;
+        };
+        self.switch_session(&name);
+    }
+
+    /// A single default tab, used when a restored session leaves the app
+    /// with nothing to display.
+    fn fresh_tab(&mut self, rows: u16, cols: u16) -> Result<Tab> {
+        let id = self.next_pane_id();
+        let tx = self.events_tx.clone();
+        Tab::new(rows, cols, id, tx, &self.config.terminal)
     }
 
     /// runs the application's main loop until the user quits
@@ -281,6 +351,18 @@ impl App {
                 let visible = self.active_pane().visible_lines();
                 self.active_pane_mut().scroll_down(visible);
             }
+            Command::SaveSession(name) => {
+                if let Some(name) = name {
+                    self.session_name = name;
+                }
+                self.save_workspace();
+            }
+            Command::LoadSession(name) => {
+                let name = name.unwrap_or_else(|| self.session_name.clone());
+                self.switch_session(&name);
+            }
+            Command::NextSession => self.cycle_session(1),
+            Command::PrevSession => self.cycle_session(-1),
             Command::SendKey(key) => self.send_key(key)?,
         }
         self.dirty = true;
