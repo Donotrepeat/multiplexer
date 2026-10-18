@@ -23,6 +23,16 @@ Manual checklist:
 - **B:** tab bar shows titles and highlights the active tab; with more tabs than fit, every entry stays visible and truncates; terminal shrunk to a tiny size doesn't panic.
 - **E:** `exit` in a pane shows `[exited]`; resize propagates to background tabs; background output/titles wake the loop without that pane being active; no `wait()` on the UI thread; quitting with a busy pane doesn't stall and leaves no zombies.
 
+##
+1. show keybindings in a popup menu
+2. add keybindings/menu to switch between sessions
+3. add persistant server
+4. clean up taskbar
+5. clean up file structure
+6. add vim mode for copying
+
+
+
 ## Future work (deliberately out of scope)
 
 - Mouse support: click-to-focus pane, wheel for scrollback.
