@@ -30,6 +30,8 @@ pub enum Command {
     /// Not a multiplexer hotkey: forward the key to the active pane's PTY.
     /// Never read from config; constructed at runtime only.
     SendKey(KeyEvent),
+    ShowBindings,
+    HideBindings,
 }
 
 /// Map a key event to the command it triggers.

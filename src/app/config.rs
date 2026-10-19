@@ -2,6 +2,7 @@ use crate::app::command::Command;
 use crate::app::workspace::valid_session_name;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::text::Line;
 use serde::de::{MapAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use std::collections::HashMap;
@@ -43,6 +44,39 @@ pub struct KeyMap {
     bindings: HashMap<KeySpec, Command>,
 }
 
+impl KeyMap {
+    /// One line per binding, e.g. "Alt+C    NewTab".
+    pub fn lines(&self) -> Vec<Line<'static>> {
+        let mut rows: Vec<(String, String)> = self
+            .bindings
+            .iter()
+            .map(|(spec, cmd)| (spec.to_string(), format!("{cmd:?}")))
+            .collect();
+        rows.sort(); // HashMap iteration order is random; sort for stable output
+        rows.into_iter()
+            .map(|(key, cmd)| Line::from(format!("{key:<10} {cmd}")))
+            .collect()
+    }
+}
+
+impl fmt::Display for KeySpec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.modifiers.contains(KeyModifiers::CONTROL) {
+            write!(f, "Ctrl+")?;
+        }
+        if self.modifiers.contains(KeyModifiers::ALT) {
+            write!(f, "Alt+")?;
+        }
+        if self.modifiers.contains(KeyModifiers::SHIFT) {
+            write!(f, "Shift+")?;
+        }
+        match self.code {
+            KeyCode::Char(' ') => write!(f, "Space"),
+            KeyCode::Char(c) => write!(f, "{c}"),
+            other => write!(f, "{other:?}"),
+        }
+    }
+}
 impl KeyMap {
     pub fn resolve(&self, key: KeyEvent, alternate: bool) -> Command {
         let spec = KeySpec::from(key);

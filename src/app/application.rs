@@ -11,6 +11,7 @@ use crossterm::event::{Event, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Clear, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::Duration;
@@ -32,6 +33,7 @@ pub struct App {
     config: Config,
     /// The session this run saves to on exit and on session switches.
     session_name: String,
+    show_pop_up: Bool,
 }
 
 impl App {
@@ -55,6 +57,7 @@ impl App {
             last_size: (term_cols, term_rows),
             config,
             session_name: session_name.to_string(),
+            show_pop_up: false,
         };
         // Restore the saved workspace if one exists; a workspace that fails
         // to load (corrupt file, unreadable) must not stop startup.
@@ -364,6 +367,8 @@ impl App {
             Command::NextSession => self.cycle_session(1),
             Command::PrevSession => self.cycle_session(-1),
             Command::SendKey(key) => self.send_key(key)?,
+            Command::ShowBindings => self.show_pop_up = true,
+            Command::HideBindings => self.show_pop_up = false,
         }
         self.dirty = true;
         Ok(())
@@ -394,7 +399,7 @@ impl App {
     fn draw(&mut self, frame: &mut Frame) {
         let (bar_area, content_area) = split_areas(frame.area());
         self.draw_bar(frame, bar_area);
-
+        self.draw_pup_up(frame);
         self.tabs[self.active_tab].draw_tab(frame, content_area);
     }
 
@@ -419,6 +424,16 @@ impl App {
             .collect();
 
         frame.render_widget(Line::from(spans), area);
+    }
+
+    fn draw_pup_up(&self, frame: &mut Frame) {
+        let area = frame
+            .area()
+            .centered(Constraint::Percentage(50), Constraint::Percentage(70));
+        frame.render_widget(Clear, area);
+        let paragraph = Paragraph::new(self.config.keybindings.lines())
+            .block(Block::bordered().title("key bindings"));
+        frame.render_widget(paragraph, area);
     }
 }
 
