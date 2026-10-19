@@ -4,7 +4,7 @@ use crate::app::events::{PaneEvent, PaneId};
 use crate::app::pane::Pane;
 use crate::app::tabs::Tab;
 use crate::app::util::initialize_pane_size;
-use crate::app::workspace::{SpawnContext, Workspace, list_sessions, next_in_cycle};
+use crate::app::workspace::{list_sessions, next_in_cycle, SpawnContext, Workspace};
 use anyhow::Result;
 use arboard::Clipboard;
 use crossterm::event::{Event, KeyEvent};
@@ -33,7 +33,7 @@ pub struct App {
     config: Config,
     /// The session this run saves to on exit and on session switches.
     session_name: String,
-    show_pop_up: Bool,
+    show_pop_up: bool,
 }
 
 impl App {
@@ -399,8 +399,10 @@ impl App {
     fn draw(&mut self, frame: &mut Frame) {
         let (bar_area, content_area) = split_areas(frame.area());
         self.draw_bar(frame, bar_area);
-        self.draw_pup_up(frame);
         self.tabs[self.active_tab].draw_tab(frame, content_area);
+        if self.show_pop_up {
+            self.draw_pup_up(frame);
+        }
     }
 
     fn draw_bar(&self, frame: &mut Frame, area: Rect) {

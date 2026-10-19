@@ -147,6 +147,8 @@ impl Default for KeyMap {
         insert("alt-n", Command::NextPane);
         insert("alt-t", Command::NewPane);
         insert("alt-v", Command::Paste);
+        insert("alt-h", Command::ShowBindings);
+        insert("alt-g", Command::HideBindings);
         Self { bindings }
     }
 }
