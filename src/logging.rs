@@ -1,5 +1,5 @@
 use log::{LevelFilter, Log, Metadata, Record};
-use std::sync::Mutex;
+use parking_lot::Mutex;
 use std::time::Instant;
 
 struct BufferedLogger {
@@ -32,7 +32,7 @@ impl Log for BufferedLogger {
             record.level().to_string(),
             record.args()
         );
-        self.entries.lock().unwrap().push(line);
+        self.entries.lock().push(line);
     }
 
     fn flush(&self) {}
@@ -60,7 +60,7 @@ pub fn reset(max_level: LevelFilter) -> Result<(), log::SetLoggerError> {
 
 pub fn dump() {
     let entries = {
-        let mut entries = logger().entries.lock().unwrap();
+        let mut entries = logger().entries.lock();
         std::mem::take(&mut *entries)
     };
     for line in entries {
@@ -78,12 +78,12 @@ mod tests {
 
     #[test]
     fn buffered_logger_captures_level_and_message() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock();
         reset(LevelFilter::Debug).unwrap();
         log::debug!("scroll offset {}", 42);
         // Other tests may log concurrently; find our entry instead of
         // assuming the buffer holds exactly one line.
-        let entries = logger().entries.lock().unwrap();
+        let entries = logger().entries.lock();
         let entry = entries
             .iter()
             .find(|entry| entry.contains("scroll offset 42"))
@@ -93,11 +93,11 @@ mod tests {
 
     #[test]
     fn logger_filters_below_max_level() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock();
         reset(LevelFilter::Info).unwrap();
         log::debug!("hidden");
         log::info!("shown");
-        let entries = logger().entries.lock().unwrap();
+        let entries = logger().entries.lock();
         assert!(!entries.iter().any(|entry| entry.contains("hidden")));
         assert!(entries.iter().any(|entry| entry.contains("shown")));
     }

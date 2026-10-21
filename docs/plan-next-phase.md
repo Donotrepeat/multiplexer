@@ -43,6 +43,13 @@ alt-n = "next_pane"
 alt-t = "new_pane"
 alt-v = "paste"
 alt-w = "quit"
+# Session commands take an optional ":<name>" parameter; without it they
+# act on the current session. next/prev cycle the saved sessions on disk.
+alt-s = "save_session"
+alt-shift-w = "save_session:work"
+alt-l = "load_session:work"
+alt-bracketright = "next_session"
+alt-bracketleft = "prev_session"
 home = "scroll_to_top"
 end = "scroll_to_bottom"
 pageup = "scroll_page_up"

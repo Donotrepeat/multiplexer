@@ -897,6 +897,7 @@ dependencies = [
  "crossterm",
  "dirs",
  "log",
+ "parking_lot",
  "portable-pty",
  "ratatui",
  "serde",
