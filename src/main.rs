@@ -6,7 +6,7 @@ mod app;
 mod logging;
 
 use app::application::App;
-use app::workspace::{DEFAULT_WORKSPACE, valid_session_name};
+use app::workspace::{valid_session_name, DEFAULT_WORKSPACE};
 
 fn set_terminal_title(title: &str) {
     print!("\x1B]0;{}\x07", title);
@@ -19,17 +19,19 @@ fn parse_session_arg() -> Result<String> {
     let mut session = DEFAULT_WORKSPACE.to_string();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
-        if arg == "--session" {
-            let Some(name) = args.next() else {
-                anyhow::bail!("--session requires a name");
-            };
-            session = name;
-        } else if let Some(name) = arg.strip_prefix("--session=") {
-            session = name.to_string();
-        } else {
-            anyhow::bail!("unknown argument: {arg}\nusage: multiplexer [--session <name>]");
+        match &arg[..] {
+            "--session" => {
+                let Some(name) = args.next() else {
+                    anyhow::bail!("--session requires a name");
+                };
+                session = name;
+            }
+            "--server" => anyhow::bail!("not yet implemented"),
+            "--attach" => anyhow::bail!("not yet implemented"),
+            _ => anyhow::bail!("unkown argument"),
         }
     }
+
     if !valid_session_name(&session) {
         anyhow::bail!("invalid session name: {session}");
     }
