@@ -2,6 +2,7 @@ pub mod application;
 pub mod command;
 pub mod config;
 pub mod events;
+pub mod host;
 pub mod pane;
 pub mod server;
 pub mod tabs;

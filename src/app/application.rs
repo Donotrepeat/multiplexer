@@ -4,7 +4,7 @@ use crate::app::events::{PaneEvent, PaneId};
 use crate::app::pane::Pane;
 use crate::app::tabs::Tab;
 use crate::app::util::initialize_pane_size;
-use crate::app::workspace::{SpawnContext, Workspace, list_sessions, next_in_cycle};
+use crate::app::workspace::{list_sessions, next_in_cycle, SpawnContext, Workspace};
 use anyhow::Result;
 use crossterm::event::Event;
 use crossterm::terminal::size;
@@ -153,6 +153,7 @@ impl App {
             }
             self.update_all(terminal)?;
             if self.dirty {
+                // host.draw(&mut |frame| self.draw(frame));
                 terminal.draw(|frame| self.draw(frame))?;
                 self.dirty = false;
             }
