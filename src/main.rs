@@ -1,12 +1,12 @@
 use anyhow::Result;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use log::LevelFilter;
 
 mod app;
 mod logging;
 
 use app::application::App;
-use app::workspace::{valid_session_name, DEFAULT_WORKSPACE};
+use app::host::{Host, LocalHost};
+use app::workspace::{DEFAULT_WORKSPACE, valid_session_name};
 
 fn set_terminal_title(title: &str) {
     print!("\x1B]0;{}\x07", title);
@@ -52,16 +52,17 @@ fn main() -> Result<()> {
     logging::init(LevelFilter::Trace)
         .map_err(|e| anyhow::anyhow!("failed to init logger: {e:?}"))?;
     let session_name = parse_session_arg()?;
-    enable_raw_mode()?;
+    // LocalHost enters raw mode / the alternate screen and restores the
+    // terminal on drop, so setup and teardown live in one place.
+    let mut host = LocalHost::new()?;
     set_terminal_title("multiplexer");
 
-    let mut app = App::new(&session_name)?;
-    ratatui::run(|terminal| app.run(terminal))?;
+    let mut app = App::new(&session_name, host.size())?;
+    app.run(&mut host)?;
 
     // Persist the workspace on clean exit only, never in the panic hook.
     app.save_workspace();
 
-    disable_raw_mode()?;
     logging::dump();
     Ok(())
 }

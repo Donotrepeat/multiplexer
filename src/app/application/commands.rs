@@ -3,17 +3,16 @@ use crate::app::command::Command;
 use anyhow::Result;
 use arboard::Clipboard;
 use crossterm::event::KeyEvent;
-use crossterm::terminal::size;
 
 impl App {
     pub(super) fn execute(&mut self, command: Command) -> Result<()> {
         match command {
             Command::Quit => self.running = false,
             Command::NewTab => {
-                let (term_cols, term_rows) = size()?;
-                let term_rows = term_rows.max(1);
-                let term_cols = term_cols.max(1);
-                let (rows, cols) = crate::app::util::initialize_pane_size(term_rows, term_cols);
+                // Use the last size pushed by the host (as `switch_session`
+                // does) instead of querying a terminal directly.
+                let (rows, cols) =
+                    crate::app::util::initialize_pane_size(self.last_size.1, self.last_size.0);
                 let id = self.next_pane_id();
                 let tx = self.events_tx.clone();
 

@@ -1,14 +1,12 @@
 use crate::app::command;
 use crate::app::config::Config;
 use crate::app::events::{PaneEvent, PaneId};
+use crate::app::host::{Host, HostEvent};
 use crate::app::pane::Pane;
 use crate::app::tabs::Tab;
 use crate::app::util::initialize_pane_size;
-use crate::app::workspace::{list_sessions, next_in_cycle, SpawnContext, Workspace};
+use crate::app::workspace::{SpawnContext, Workspace, list_sessions, next_in_cycle};
 use anyhow::Result;
-use crossterm::event::Event;
-use crossterm::terminal::size;
-use ratatui::DefaultTerminal;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::Duration;
 
@@ -33,11 +31,14 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(session_name: &str) -> Result<Self> {
+    /// `term_size` is the host's screen size as `(cols, rows)`; the host
+    /// supplies it so `App` never queries a terminal directly (a server
+    /// process has none).
+    pub fn new(session_name: &str, term_size: (u16, u16)) -> Result<Self> {
         let config = Config::load()?;
 
         let (events_tx, events_rx) = mpsc::channel();
-        let (term_cols, term_rows) = size()?;
+        let (term_cols, term_rows) = term_size;
         let term_rows = term_rows.max(1);
         let term_cols = term_cols.max(1);
         let (rows, cols) = initialize_pane_size(term_rows, term_cols);
@@ -145,16 +146,15 @@ impl App {
     }
 
     /// runs the application's main loop until the user quits
-    pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+    pub fn run(&mut self, host: &mut dyn Host) -> Result<()> {
         while self.running {
-            self.pump()?;
+            self.pump(host)?;
             if !self.running {
                 break;
             }
-            self.update_all(terminal)?;
+            self.update_all(host);
             if self.dirty {
-                // host.draw(&mut |frame| self.draw(frame));
-                terminal.draw(|frame| self.draw(frame))?;
+                host.draw(&mut |frame| self.draw(frame))?;
                 self.dirty = false;
             }
         }
@@ -189,7 +189,7 @@ impl App {
     /// Wait briefly for a pane event, then drain everything pending: pane
     /// events first, then keys and terminal resizes. Output from background
     /// tabs wakes the loop exactly like output from the active one.
-    fn pump(&mut self) -> Result<()> {
+    fn pump(&mut self, host: &mut dyn Host) -> Result<()> {
         match self.events_rx.recv_timeout(Duration::from_millis(16)) {
             Ok(event) => self.handle_pane_event(event),
             Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => {}
@@ -198,9 +198,9 @@ impl App {
             self.handle_pane_event(event);
         }
 
-        while crossterm::event::poll(Duration::ZERO)? {
-            match crossterm::event::read()? {
-                Event::Key(key) => {
+        while let Some(event) = host.poll_event(Duration::ZERO)? {
+            match event {
+                HostEvent::Key(key) => {
                     let is_alternate = self.active_pane().in_alternated_state();
                     self.execute(command::resolve(
                         key,
@@ -208,8 +208,13 @@ impl App {
                         &self.config.keybindings,
                     ))?;
                 }
-                Event::Resize(_, _) => self.dirty = true,
-                _ => {}
+                HostEvent::Resize(cols, rows) => {
+                    self.last_size = (cols.max(1), rows.max(1));
+                    self.dirty = true;
+                }
+                // Only a network host produces this; a local host never
+                // detaches, so there is nothing to do here yet.
+                HostEvent::Detach => {}
             }
         }
         Ok(())
@@ -248,18 +253,17 @@ impl App {
     /// Push the current layout into every pane of every tab, not just the
     /// visible one, so background shells see resizes and title changes
     /// immediately. Drawing stays read-only.
-    fn update_all(&mut self, terminal: &DefaultTerminal) -> Result<()> {
-        let size = terminal.size()?;
-        if self.last_size != (size.width, size.height) {
-            self.last_size = (size.width, size.height);
+    fn update_all(&mut self, host: &dyn Host) {
+        let (width, height) = host.size();
+        if self.last_size != (width, height) {
+            self.last_size = (width, height);
             self.dirty = true;
         }
         let (_, content_area) =
-            render::split_areas(ratatui::layout::Rect::new(0, 0, size.width, size.height));
+            render::split_areas(ratatui::layout::Rect::new(0, 0, width, height));
         for tab in &mut self.tabs {
             tab.update(content_area);
         }
-        Ok(())
     }
 
     pub(super) fn get_tab(&self) -> &Tab {
