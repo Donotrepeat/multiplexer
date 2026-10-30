@@ -73,12 +73,3 @@ impl Drop for LocalHost {
         ratatui::restore(); // raw mode off + leave alternate screen
     }
 }
-
-pub enum ClientEvent {
-    Key(KeyEvent),
-    Resize(u16, u16),
-    // Graceful disconnect; only the future network host produces this.
-    // A local session never detaches.
-    #[allow(dead_code)]
-    Detach,
-}

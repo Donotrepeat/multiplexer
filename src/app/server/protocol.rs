@@ -1,16 +1,112 @@
-use crate::app::host::ClientEvent;
 use anyhow::Result;
-use crossterm::event::{KeyEvent, KeyModifiers};
-use serde::Serialize;
+use crossterm::event::{Event, KeyEvent};
+use ratatui::style::{Color, Modifier, Style};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use std::io::Read;
 
+const PROTOCOL_VERSION: u8 = 1;
+const MAX_MESSAGE_LEN: usize = 3000;
+
+#[derive(Debug)]
 pub enum ProtocolError {
     MessageTooLarge { len: usize, max: usize },
     UnsupportedVersion(u8),
-    // truncated payload / JSON / io...
+    Io(std::io::Error),
+    Json(serde_json::Error),
+}
+#[derive(Serialize)]
+struct Envelope<'a, T> {
+    version: u8,
+    message: &'a T,
+}
+#[derive(Deserialize)]
+struct DecodeEnvelope<T> {
+    version: u8,
+    message: T,
+}
+pub fn encode_message<T: Serialize>(message: &T) -> Result<Vec<u8>, ProtocolError> {
+    let payload = serde_json::to_vec(&Envelope {
+        version: 1,
+        message,
+    })
+    .map_err(ProtocolError::Json)?;
+
+    if payload.len() > MAX_MESSAGE_LEN {
+        return Err(ProtocolError::MessageTooLarge {
+            len: payload.len(),
+            max: MAX_MESSAGE_LEN,
+        });
+    }
+
+    let len = u32::try_from(payload.len()).map_err(|_| ProtocolError::MessageTooLarge {
+        len: payload.len(),
+        max: u32::MAX as usize,
+    })?;
+
+    let mut framed = Vec::with_capacity(4 + payload.len());
+    framed.extend_from_slice(&len.to_be_bytes());
+    framed.extend_from_slice(&payload);
+    Ok(framed)
 }
 
-pub fn encode_message<T: Serialize>(message: &T) -> Result<Vec<u8>, ProtocolError> {}
-pub fn decode_message<T: DeserializeOwned, R: Read>(reader: &mut R) -> Result<T, ProtocolError> {}
+fn length_prefix(buffer: &[u8]) -> Vec<u8> {
+    let length_bytes: [u8; 4] = buffer[0..4].try_into().unwrap();
+    let mut msg = Vec::from(&length_bytes);
+    msg.extend_from_slice(buffer);
+    msg
+}
+
+#[derive(Clone)]
+struct FramePacket {
+    rows: usize,
+    cols: usize,
+    tab_bar: Vec<String>,
+    active_tab: usize,
+    panes: Vec<PaneFrame>,
+}
+
+#[derive(Clone)]
+struct PaneFrame {
+    id: usize,
+    title: String,
+    exited: bool,
+    cursor: Option<(usize, usize)>,
+    cells: Vec<Cell>,
+}
+
+#[derive(Clone)]
+struct Cell {
+    row: usize,
+    col: usize,
+    symbol: String,
+    style: Style,
+}
+
+pub fn decode_message<T: DeserializeOwned, R: Read>(reader: &mut R) -> Result<T, ProtocolError> {
+    let mut prefix = [0_u8; 4];
+    reader.read_exact(&mut prefix).map_err(ProtocolError::Io)?;
+
+    let len = u32::from_be_bytes(prefix) as usize;
+
+    if len > MAX_MESSAGE_LEN {
+        return Err(ProtocolError::MessageTooLarge {
+            len,
+            max: MAX_MESSAGE_LEN,
+        });
+    }
+
+    let mut payload = vec![0; len];
+    reader.read_exact(&mut payload).map_err(ProtocolError::Io)?;
+
+    let envelope: DecodeEnvelope<T> =
+        serde_json::from_slice(&payload).map_err(ProtocolError::Json)?;
+
+    if envelope.version != PROTOCOL_VERSION {
+        return Err(ProtocolError::UnsupportedVersion(envelope.version));
+    }
+
+    Ok(envelope.message)
+}
 
 #[cfg(test)]
 mod tests {
