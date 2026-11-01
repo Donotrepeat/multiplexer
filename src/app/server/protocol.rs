@@ -1,7 +1,13 @@
 use anyhow::Result;
 use crossterm::event::{Event, KeyEvent};
 use ratatui::style::{Color, Modifier, Style};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::de::DeserializeOwned;
+use serde::de::{
+    self, Deserialize, Deserializer, EnumAccess, SeqAccess, Unexpected, VariantAccess, Visitor,
+};
+use serde::ser::{Serialize, SerializeTupleVariant, Serializer};
+use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::io::Read;
 
 const PROTOCOL_VERSION: u8 = 1;
@@ -19,6 +25,7 @@ struct Envelope<'a, T> {
     version: u8,
     message: &'a T,
 }
+
 #[derive(Deserialize)]
 struct DecodeEnvelope<T> {
     version: u8,
@@ -56,7 +63,7 @@ fn length_prefix(buffer: &[u8]) -> Vec<u8> {
     msg
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct FramePacket {
     rows: usize,
     cols: usize,
@@ -65,7 +72,7 @@ struct FramePacket {
     panes: Vec<PaneFrame>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct PaneFrame {
     id: usize,
     title: String,
@@ -74,12 +81,162 @@ struct PaneFrame {
     cells: Vec<Cell>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Cell {
     row: usize,
     col: usize,
     symbol: String,
     style: Style,
+}
+pub enum ClientEvent {
+    Key(KeyEvent),
+    Resize(u16, u16),
+    Detach,
+}
+
+impl Serialize for ClientEvent {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::Key(key) => serializer.serialize_newtype_variant("ClientEvent", 0, "Key", key),
+            Self::Detach => serializer.serialize_unit_variant("ClientEvent", 2, "Detach"),
+            Self::Resize(w, h) => {
+                let mut tv = serializer.serialize_tuple_variant("ClientEvent", 1, "Resize", 2)?;
+                tv.serialize_field(w)?;
+                tv.serialize_field(h)?;
+                tv.end()
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ClientEvent {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        // 1. Which variant is it?
+        enum Field {
+            Key,
+            Resize,
+            Detach,
+        }
+
+        struct FieldVisitor;
+
+        impl<'de> Visitor<'de> for FieldVisitor {
+            type Value = Field;
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("`Key`, `Resize`, or `Detach`")
+            }
+
+            // Binary formats (bincode, etc.) send the index
+            fn visit_u64<E: de::Error>(self, v: u64) -> Result<Field, E> {
+                match v {
+                    0 => Ok(Field::Key),
+                    1 => Ok(Field::Resize),
+                    2 => Ok(Field::Detach),
+                    _ => Err(E::invalid_value(
+                        Unexpected::Unsigned(v),
+                        &"variant index 0..=2",
+                    )),
+                }
+            }
+
+            // Self-describing formats (JSON, etc.) send the name
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<Field, E> {
+                match v {
+                    "Key" => Ok(Field::Key),
+                    "Resize" => Ok(Field::Resize),
+                    "Detach" => Ok(Field::Detach),
+                    _ => Err(E::unknown_variant(v, VARIANTS)),
+                }
+            }
+        }
+
+        impl<'de> Deserialize<'de> for Field {
+            fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                d.deserialize_identifier(FieldVisitor)
+            }
+        }
+
+        // 2. Visitor for Resize(u16, u16)
+        struct ResizeVisitor;
+
+        impl<'de> Visitor<'de> for ResizeVisitor {
+            type Value = ClientEvent;
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("tuple variant ClientEvent::Resize")
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<ClientEvent, A::Error> {
+                let w = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(0, &self))?;
+                let h = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                Ok(ClientEvent::Resize(w, h))
+            }
+        }
+
+        // 3. Visitor for the whole enum
+        struct ClientEventVisitor;
+
+        impl<'de> Visitor<'de> for ClientEventVisitor {
+            type Value = ClientEvent;
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("enum ClientEvent")
+            }
+
+            fn visit_enum<A: EnumAccess<'de>>(self, data: A) -> Result<ClientEvent, A::Error> {
+                match data.variant()? {
+                    (Field::Key, v) => v.newtype_variant().map(ClientEvent::Key),
+                    (Field::Resize, v) => v.tuple_variant(2, ResizeVisitor),
+                    (Field::Detach, v) => {
+                        v.unit_variant()?;
+                        Ok(ClientEvent::Detach)
+                    }
+                }
+            }
+        }
+
+        const VARIANTS: &[&str] = &["Key", "Resize", "Detach"];
+        deserializer.deserialize_enum("ClientEvent", VARIANTS, ClientEventVisitor)
+    }
+}
+
+pub enum ServerEvent {
+    Key(KeyEvent),
+    Resize(u16, u16),
+    Detach,
+    Frame(FramePacket),
+}
+impl Serialize for ServerEvent {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::Key(key) => serializer.serialize_newtype_variant("ServerEvent", 0, "Key", key),
+            Self::Detach => serializer.serialize_unit_variant("ServerEvent", 2, "Detach"),
+            Self::Resize(w, h) => {
+                let mut tv = serializer.serialize_tuple_variant("ServerEvent", 1, "Resize", 2)?;
+                tv.serialize_field(w)?;
+                tv.serialize_field(h)?;
+                tv.end()
+            }
+
+            Self::Frame(frame) => {
+                serializer.serialize_newtype_variant("ServerEvent", 3, "Frame", frame)
+            }
+        }
+    }
 }
 
 pub fn decode_message<T: DeserializeOwned, R: Read>(reader: &mut R) -> Result<T, ProtocolError> {
