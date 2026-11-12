@@ -2,10 +2,8 @@ use anyhow::Result;
 use crossterm::event::{Event, KeyEvent};
 use ratatui::style::{Color, Modifier, Style};
 use serde::de::DeserializeOwned;
-use serde::de::{
-    self, Deserialize, Deserializer, EnumAccess, SeqAccess, Unexpected, VariantAccess, Visitor,
-};
-use serde::ser::{Serialize, SerializeTupleVariant, Serializer};
+use serde::de::{self, Deserializer, EnumAccess, SeqAccess, Unexpected, VariantAccess, Visitor};
+use serde::ser::{SerializeTupleVariant, Serializer};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::io::Read;
@@ -57,13 +55,14 @@ pub fn encode_message<T: Serialize>(message: &T) -> Result<Vec<u8>, ProtocolErro
 }
 
 fn length_prefix(buffer: &[u8]) -> Vec<u8> {
-    let length_bytes: [u8; 4] = buffer[0..4].try_into().unwrap();
-    let mut msg = Vec::from(&length_bytes);
+    let length_bytes = buffer.len();
+    let length: u32 = u32::try_from(length_bytes).unwrap();
+    let bytes: [u8; 4] = length.to_be_bytes();
+    let mut msg = Vec::from(bytes);
     msg.extend_from_slice(buffer);
     msg
 }
-
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct FramePacket {
     rows: usize,
     cols: usize,
@@ -72,7 +71,7 @@ struct FramePacket {
     panes: Vec<PaneFrame>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct PaneFrame {
     id: usize,
     title: String,
@@ -81,13 +80,15 @@ struct PaneFrame {
     cells: Vec<Cell>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct Cell {
     row: usize,
     col: usize,
     symbol: String,
     style: Style,
 }
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum ClientEvent {
     Key(KeyEvent),
     Resize(u16, u16),
@@ -210,7 +211,7 @@ impl<'de> Deserialize<'de> for ClientEvent {
         deserializer.deserialize_enum("ClientEvent", VARIANTS, ClientEventVisitor)
     }
 }
-
+#[derive(PartialEq, Debug, Deserialize)]
 pub enum ServerEvent {
     Key(KeyEvent),
     Resize(u16, u16),
