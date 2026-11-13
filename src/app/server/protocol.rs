@@ -1,9 +1,14 @@
+// The protocol types and helpers are only wired into the running server in
+// later M2 tasks (ServerHost, client manager); until then the binary
+// legitimately never touches them.
+#![allow(dead_code)]
+
 use anyhow::Result;
-use crossterm::event::{Event, KeyEvent};
-use ratatui::style::{Color, Modifier, Style};
+use crossterm::event::KeyEvent;
+use ratatui::style::Style;
 use serde::de::DeserializeOwned;
 use serde::de::{self, Deserializer, EnumAccess, SeqAccess, Unexpected, VariantAccess, Visitor};
-use serde::ser::{SerializeTupleVariant, Serializer};
+use serde::ser::SerializeTupleVariant;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::io::Read;
@@ -43,15 +48,9 @@ pub fn encode_message<T: Serialize>(message: &T) -> Result<Vec<u8>, ProtocolErro
         });
     }
 
-    let len = u32::try_from(payload.len()).map_err(|_| ProtocolError::MessageTooLarge {
-        len: payload.len(),
-        max: u32::MAX as usize,
-    })?;
-
-    let mut framed = Vec::with_capacity(4 + payload.len());
-    framed.extend_from_slice(&len.to_be_bytes());
-    framed.extend_from_slice(&payload);
-    Ok(framed)
+    // MAX_MESSAGE_LEN is well under u32::MAX, so the big-endian prefix in
+    // `length_prefix` cannot overflow.
+    Ok(length_prefix(&payload))
 }
 
 fn length_prefix(buffer: &[u8]) -> Vec<u8> {
@@ -72,18 +71,9 @@ pub struct FramePacket {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-struct PaneFrame {
-    id: usize,
-    title: String,
-    exited: bool,
-    cursor: Option<(usize, usize)>,
-    cells: Vec<Cell>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Cell {
-    row: usize,
-    col: usize,
+    row: u16,
+    col: u16,
     symbol: String,
     style: Style,
 }
@@ -211,33 +201,14 @@ impl<'de> Deserialize<'de> for ClientEvent {
         deserializer.deserialize_enum("ClientEvent", VARIANTS, ClientEventVisitor)
     }
 }
-#[derive(PartialEq, Debug, Deserialize)]
+/// A message the server sends to a client. Input-direction events (`Key`,
+/// `Resize`, `Detach`) live on [`ClientEvent`] only: the server renders, the
+/// client only supplies input. The tab bar is part of the flat
+/// [`FramePacket`], so there is no separate `Title` variant.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ServerEvent {
-    Key(KeyEvent),
-    Resize(u16, u16),
-    Detach,
     Frame(FramePacket),
-}
-impl Serialize for ServerEvent {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        match self {
-            Self::Key(key) => serializer.serialize_newtype_variant("ServerEvent", 0, "Key", key),
-            Self::Detach => serializer.serialize_unit_variant("ServerEvent", 2, "Detach"),
-            Self::Resize(w, h) => {
-                let mut tv = serializer.serialize_tuple_variant("ServerEvent", 1, "Resize", 2)?;
-                tv.serialize_field(w)?;
-                tv.serialize_field(h)?;
-                tv.end()
-            }
-
-            Self::Frame(frame) => {
-                serializer.serialize_newtype_variant("ServerEvent", 3, "Frame", frame)
-            }
-        }
-    }
+    Error(String),
 }
 
 pub fn decode_message<T: DeserializeOwned, R: Read>(reader: &mut R) -> Result<T, ProtocolError> {
@@ -274,8 +245,8 @@ mod tests {
     use ratatui::style::{Color, Modifier, Style};
 
     use super::{
-        decode_message, encode_message, length_prefix, Cell, ClientEvent, FramePacket, PaneFrame,
-        ProtocolError, ServerEvent, MAX_MESSAGE_LEN,
+        Cell, ClientEvent, FramePacket, MAX_MESSAGE_LEN, ProtocolError, ServerEvent,
+        decode_message, encode_message, length_prefix,
     };
 
     struct OneByteReader<R> {
@@ -338,6 +309,15 @@ mod tests {
         let decoded: ServerEvent = decode_message(&mut Cursor::new(encoded)).unwrap();
 
         assert_eq!(decoded, ServerEvent::Frame(frame));
+    }
+
+    #[test]
+    fn error_message_round_trips() {
+        let encoded = encode_message(&ServerEvent::Error("auth failed".to_string())).unwrap();
+
+        let decoded: ServerEvent = decode_message(&mut Cursor::new(encoded)).unwrap();
+
+        assert_eq!(decoded, ServerEvent::Error("auth failed".to_string()));
     }
 
     #[test]
