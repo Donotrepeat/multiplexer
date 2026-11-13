@@ -9,7 +9,7 @@ use std::fmt;
 use std::io::Read;
 
 const PROTOCOL_VERSION: u8 = 1;
-const MAX_MESSAGE_LEN: usize = 3000;
+const MAX_MESSAGE_LEN: usize = 16 * 1024 * 1024;
 
 #[derive(Debug)]
 pub enum ProtocolError {
@@ -62,13 +62,13 @@ fn length_prefix(buffer: &[u8]) -> Vec<u8> {
     msg.extend_from_slice(buffer);
     msg
 }
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-struct FramePacket {
-    rows: usize,
-    cols: usize,
-    tab_bar: Vec<String>,
-    active_tab: usize,
-    panes: Vec<PaneFrame>,
+pub struct FramePacket {
+    pub cols: u16,
+    pub rows: u16,
+    pub cursor: Option<(u16, u16)>,
+    pub cells: Vec<Cell>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -81,7 +81,7 @@ struct PaneFrame {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-struct Cell {
+pub struct Cell {
     row: usize,
     col: usize,
     symbol: String,
@@ -274,8 +274,8 @@ mod tests {
     use ratatui::style::{Color, Modifier, Style};
 
     use super::{
-        Cell, ClientEvent, FramePacket, MAX_MESSAGE_LEN, PaneFrame, ProtocolError, ServerEvent,
-        decode_message, encode_message, length_prefix,
+        decode_message, encode_message, length_prefix, Cell, ClientEvent, FramePacket, PaneFrame,
+        ProtocolError, ServerEvent, MAX_MESSAGE_LEN,
     };
 
     struct OneByteReader<R> {
@@ -317,28 +317,21 @@ mod tests {
         let frame = FramePacket {
             rows: 1,
             cols: 2,
-            tab_bar: Vec::new(),
-            active_tab: 0,
-            panes: vec![PaneFrame {
-                id: 7,
-                title: "shell".to_string(),
-                exited: false,
-                cursor: Some((1, 0)),
-                cells: vec![
-                    Cell {
-                        row: 0,
-                        col: 0,
-                        symbol: "h".to_string(),
-                        style: Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
-                    },
-                    Cell {
-                        row: 0,
-                        col: 1,
-                        symbol: "i".to_string(),
-                        style: Style::default(),
-                    },
-                ],
-            }],
+            cursor: Some((0, 0)),
+            cells: vec![
+                Cell {
+                    row: 0,
+                    col: 0,
+                    symbol: "h".to_string(),
+                    style: Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
+                },
+                Cell {
+                    row: 0,
+                    col: 1,
+                    symbol: "i".to_string(),
+                    style: Style::default(),
+                },
+            ],
         };
         let encoded = encode_message(&ServerEvent::Frame(frame.clone())).unwrap();
 
