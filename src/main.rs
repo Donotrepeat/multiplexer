@@ -6,8 +6,13 @@ mod logging;
 
 use app::application::App;
 use app::host::{Host, LocalHost};
-use app::workspace::{DEFAULT_WORKSPACE, valid_session_name};
+use app::workspace::{valid_session_name, DEFAULT_WORKSPACE};
 
+use crate::app::workspace::session;
+enum Mode {
+    Local { session: String },
+    Server { session: String },
+}
 fn set_terminal_title(title: &str) {
     print!("\x1B]0;{}\x07", title);
 }
@@ -15,8 +20,9 @@ fn set_terminal_title(title: &str) {
 /// The session to start on: `--session <name>` (or `--session=<name>`),
 /// defaulting to the auto-saved default session. Deliberately hand-rolled;
 /// `clap` is deferred until there are more flags.
-fn parse_session_arg() -> Result<String> {
+fn parse_session_arg() -> Result<Mode> {
     let mut session = DEFAULT_WORKSPACE.to_string();
+    let mut server = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match &arg[..] {
@@ -26,7 +32,7 @@ fn parse_session_arg() -> Result<String> {
                 };
                 session = name;
             }
-            "--server" => anyhow::bail!("not yet implemented"),
+            "--server" => server = true,
             "--attach" => anyhow::bail!("not yet implemented"),
             _ => anyhow::bail!("unkown argument"),
         }
@@ -35,7 +41,11 @@ fn parse_session_arg() -> Result<String> {
     if !valid_session_name(&session) {
         anyhow::bail!("invalid session name: {session}");
     }
-    Ok(session)
+    if server {
+        Ok(Mode::Server { session })
+    } else {
+        Ok(Mode::Local { session })
+    }
 }
 
 fn main() -> Result<()> {
@@ -51,18 +61,31 @@ fn main() -> Result<()> {
 
     logging::init(LevelFilter::Trace)
         .map_err(|e| anyhow::anyhow!("failed to init logger: {e:?}"))?;
-    let session_name = parse_session_arg()?;
+
+    match parse_session_arg()? {
+        Mode::Local { session } => run_local(&session),
+        Mode::Server { session } => run_server(&session),
+    }?;
     // LocalHost enters raw mode / the alternate screen and restores the
     // terminal on drop, so setup and teardown live in one place.
+    Ok(())
+}
+
+fn run_local(session: &str) -> Result<()> {
+    // panic hook moves here — it only makes sense when there is a
+    // terminal to restore
     let mut host = LocalHost::new()?;
     set_terminal_title("multiplexer");
-
-    let mut app = App::new(&session_name, host.size())?;
+    let mut app = App::new(session, host.size())?;
     app.run(&mut host)?;
-
-    // Persist the workspace on clean exit only, never in the panic hook.
     app.save_workspace();
-
     logging::dump();
     Ok(())
+}
+
+fn run_server(session: &str) -> Result<()> {
+    // Tasks 2–5 land here: ServerHost::new(session), App::new(...),
+    // app.run(&mut host), save_workspace on clean exit — no raw mode,
+    // no alt screen, no panic hook (nothing to restore).
+    anyhow::bail!("server mode is not implemented yet")
 }
