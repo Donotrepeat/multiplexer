@@ -11,7 +11,7 @@ use serde::de::{self, Deserializer, EnumAccess, SeqAccess, Unexpected, VariantAc
 use serde::ser::SerializeTupleVariant;
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::io::Read;
+use std::io::{Read, Write};
 
 const PROTOCOL_VERSION: u8 = 1;
 const MAX_MESSAGE_LEN: usize = 16 * 1024 * 1024;
@@ -52,7 +52,12 @@ pub fn encode_message<T: Serialize>(message: &T) -> Result<Vec<u8>, ProtocolErro
     // `length_prefix` cannot overflow.
     Ok(length_prefix(&payload))
 }
-
+/// Encode and transmit one framed message. `decode_message` is the
+/// receiving counterpart; there is deliberately no "receive" wrapper.
+pub fn send_message<T: Serialize, W: Write>(w: &mut W, message: &T) -> Result<(), ProtocolError> {
+    let framed = encode_message(message)?;
+    w.write_all(&framed).map_err(ProtocolError::Io)
+}
 fn length_prefix(buffer: &[u8]) -> Vec<u8> {
     let length_bytes = buffer.len();
     let length: u32 = u32::try_from(length_bytes).unwrap();
@@ -245,8 +250,8 @@ mod tests {
     use ratatui::style::{Color, Modifier, Style};
 
     use super::{
-        Cell, ClientEvent, FramePacket, MAX_MESSAGE_LEN, ProtocolError, ServerEvent,
-        decode_message, encode_message, length_prefix,
+        decode_message, encode_message, length_prefix, Cell, ClientEvent, FramePacket,
+        ProtocolError, ServerEvent, MAX_MESSAGE_LEN,
     };
 
     struct OneByteReader<R> {
