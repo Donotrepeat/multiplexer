@@ -12,11 +12,12 @@ use serde::ser::SerializeTupleVariant;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::io::{Read, Write};
+use strum::Display;
 
 const PROTOCOL_VERSION: u8 = 1;
 const MAX_MESSAGE_LEN: usize = 16 * 1024 * 1024;
 
-#[derive(Debug)]
+#[derive(Debug, Display)]
 pub enum ProtocolError {
     MessageTooLarge { len: usize, max: usize },
     UnsupportedVersion(u8),

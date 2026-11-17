@@ -1,21 +1,49 @@
 use crate::app::server::protocol::decode_message;
 use crate::app::server::protocol::send_message;
+use crate::app::server::protocol::ProtocolError;
 use anyhow::Result;
 use hmac::Hmac;
 use hmac::KeyInit;
+use hmac::Mac;
 use rand::{rngs::SysRng, TryRng};
 use serde::{Deserialize, Serialize};
 use sha2;
+use std::fmt;
 use std::fmt::Write as format_write;
 use std::fs;
 use std::io::Read;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
+#[derive(Debug)]
+pub enum AuthError {
+    Rejected(String),
+    TokenFile(std::io::Error),
+    Protocol(ProtocolError),
+}
+
+impl fmt::Display for AuthError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Rejected(reason) => write!(f, "authentication rejected: {reason}"),
+            Self::TokenFile(e) => write!(f, "could not read token file: {e}"),
+            Self::Protocol(e) => write!(f, "handshake protocol error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for AuthError {}
+
+impl From<ProtocolError> for AuthError {
+    fn from(e: ProtocolError) -> Self {
+        Self::Protocol(e)
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct Challenge {
     session: String,
-    nonce_hex: String,
+    nonce_hex: [u8; 32],
 } // server → client
 #[derive(Serialize, Deserialize)]
 struct AuthResponse {
@@ -28,36 +56,47 @@ enum AuthOutcome {
 } // server → client
   //
 pub fn authenticate<R: Read, W: Write>(
-    r: R,
+    r: &mut R,
     w: &mut W,
     session: &str,
     token: &str,
 ) -> Result<(), AuthError> {
-    let nonce = generate_token();
+    let nonce = random_bytes();
     let msg = Challenge {
         session: session.to_owned(),
         nonce_hex: nonce,
     };
     send_message(w, &msg)?;
-    let response: AuthResponse = decode_message(&mut r)?;
+    let response: AuthResponse = decode_message(r)?;
     let Some(given) = from_hex(&response.response_hex) else {
         send_message(w, &AuthOutcome::Error("malformed handshake".into()))?;
-        return Err(AuthError::Rejected);
+        return Err(AuthError::Rejected(String::from("malformed handshake")));
     };
-
+    if given.len() != 32 {
+        send_message(w, &AuthOutcome::Error("malformed response".into()))?;
+        return Err(AuthError::Rejected("malformed response".into()));
+    }
     let mut mac = Hmac::<sha2::Sha256>::new_from_slice(token.as_bytes())
         .expect("HMAC-SHA256 accepts any key length");
     mac.update(&nonce);
 
-    let outcome = if mac.verify(&given).is_ok() {
-        AuthOutcome::Ok
-    } else {
-        AuthOutcome::Error("authentication failed".into())
+    let outcome = match mac.verify_slice(&given) {
+        Ok(()) => AuthOutcome::Ok,
+        Err(_) => AuthOutcome::Error("authentication failed".into()),
     };
     send_message(w, &outcome)?;
     Ok(())
 }
-//pub fn respond<R: Read, W: Write>(r: R, w: W, token: &str) -> Result<()> {}
+pub fn respond<R: Read, W: Write>(r: R, w: W, token: &str) -> Result<()> {
+    //read Challenge
+    // token = fs::read(tokens/<session>.token)?
+    // hmac = HMAC-SHA256(token, nonce)
+    // send AuthResponse{hmac_hex} ──►  ┌─4B len─┐JSON
+    //read AuthOutcome
+    // Ok → return Ok(())
+    // Error(msg) → return Err
+    Ok(())
+}
 
 pub(super) fn tokens_dir() -> Option<PathBuf> {
     dirs::state_dir()
