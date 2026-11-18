@@ -251,8 +251,8 @@ mod tests {
     use ratatui::style::{Color, Modifier, Style};
 
     use super::{
-        decode_message, encode_message, length_prefix, Cell, ClientEvent, FramePacket,
-        ProtocolError, ServerEvent, MAX_MESSAGE_LEN,
+        Cell, ClientEvent, FramePacket, MAX_MESSAGE_LEN, ProtocolError, ServerEvent,
+        decode_message, encode_message, length_prefix,
     };
 
     struct OneByteReader<R> {

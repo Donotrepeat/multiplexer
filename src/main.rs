@@ -6,9 +6,8 @@ mod logging;
 
 use app::application::App;
 use app::host::{Host, LocalHost};
-use app::workspace::{valid_session_name, DEFAULT_WORKSPACE};
+use app::workspace::{DEFAULT_WORKSPACE, valid_session_name};
 
-use crate::app::workspace::session;
 enum Mode {
     Local { session: String },
     Server { session: String },
@@ -83,7 +82,7 @@ fn run_local(session: &str) -> Result<()> {
     Ok(())
 }
 
-fn run_server(session: &str) -> Result<()> {
+fn run_server(_session: &str) -> Result<()> {
     // Tasks 2–5 land here: ServerHost::new(session), App::new(...),
     // app.run(&mut host), save_workspace on clean exit — no raw mode,
     // no alt screen, no panic hook (nothing to restore).

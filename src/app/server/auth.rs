@@ -1,11 +1,11 @@
+use crate::app::server::protocol::ProtocolError;
 use crate::app::server::protocol::decode_message;
 use crate::app::server::protocol::send_message;
-use crate::app::server::protocol::ProtocolError;
 use anyhow::Result;
 use hmac::Hmac;
 use hmac::KeyInit;
 use hmac::Mac;
-use rand::{rngs::SysRng, TryRng};
+use rand::{TryRng, rngs::SysRng};
 use serde::{Deserialize, Serialize};
 use sha2;
 use std::fmt;
@@ -54,7 +54,7 @@ enum AuthOutcome {
     Ok,
     Error(String),
 } // server → client
-  //
+//
 pub fn authenticate<R: Read, W: Write>(
     r: &mut R,
     w: &mut W,
@@ -106,8 +106,8 @@ pub fn respond<R: Read, W: Write>(r: &mut R, w: &mut W, token: &str) -> Result<(
     //read AuthOutcome
     let verif: AuthOutcome = decode_message(r)?;
     match verif {
-        AuthOutcome::Ok => return Ok(()),
-        AuthOutcome::Error(e) => return Err(AuthError::Rejected(e)),
+        AuthOutcome::Ok => Ok(()),
+        AuthOutcome::Error(e) => Err(AuthError::Rejected(e)),
     }
 }
 
@@ -134,7 +134,7 @@ fn to_hex(bytes: [u8; 32]) -> String {
     token
 }
 fn from_hex(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+    if !s.len().is_multiple_of(2) || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
     (0..s.len())
@@ -161,8 +161,8 @@ fn rotate_token_in(dir: &PathBuf, session: &str) -> Result<String> {
     Ok(token)
 }
 pub fn rotate_token(session: &str) {
-    let dir = tokens_dir().unwrap_or(PathBuf::new());
-    let new_token = rotate_token_in(&dir, session);
+    let dir = tokens_dir().unwrap_or_default();
+    let _new_token = rotate_token_in(&dir, session);
 }
 
 #[cfg(test)]
