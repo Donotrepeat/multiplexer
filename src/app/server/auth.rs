@@ -87,15 +87,28 @@ pub fn authenticate<R: Read, W: Write>(
     send_message(w, &outcome)?;
     Ok(())
 }
-pub fn respond<R: Read, W: Write>(r: R, w: W, token: &str) -> Result<()> {
+
+pub fn respond<R: Read, W: Write>(r: &mut R, w: &mut W, token: &str) -> Result<(), AuthError> {
     //read Challenge
-    // token = fs::read(tokens/<session>.token)?
-    // hmac = HMAC-SHA256(token, nonce)
-    // send AuthResponse{hmac_hex} ──►  ┌─4B len─┐JSON
+    let response: Challenge = decode_message(r)?;
+
+    let mut mac = Hmac::<sha2::Sha256>::new_from_slice(token.as_bytes())
+        .expect("HMAC-SHA256 accepts any key length");
+    mac.update(&response.nonce_hex);
+    let out = mac.finalize();
+    let tag: [u8; 32] = (*out.as_bytes()).into();
+    send_message(
+        w,
+        &AuthResponse {
+            response_hex: to_hex(tag),
+        },
+    )?;
     //read AuthOutcome
-    // Ok → return Ok(())
-    // Error(msg) → return Err
-    Ok(())
+    let verif: AuthOutcome = decode_message(r)?;
+    match verif {
+        AuthOutcome::Ok => return Ok(()),
+        AuthOutcome::Error(e) => return Err(AuthError::Rejected(e)),
+    }
 }
 
 pub(super) fn tokens_dir() -> Option<PathBuf> {
