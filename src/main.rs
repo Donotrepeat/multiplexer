@@ -3,10 +3,11 @@ use log::LevelFilter;
 
 mod app;
 mod logging;
+mod net;
 
 use app::application::App;
 use app::host::{Host, LocalHost};
-use app::workspace::{DEFAULT_WORKSPACE, valid_session_name};
+use app::workspace::{valid_session_name, DEFAULT_WORKSPACE};
 
 enum Mode {
     Local { session: String },

@@ -3,6 +3,7 @@
 // never touches it.
 #![allow(dead_code)]
 
+use crate::app::server::paths::{self, PathError};
 use crate::app::server::protocol::ProtocolError;
 use crate::app::server::protocol::decode_message;
 use crate::app::server::protocol::send_message;
@@ -16,13 +17,15 @@ use sha2;
 use std::fmt;
 use std::fmt::Write as format_write;
 use std::fs;
+use std::io;
 use std::io::Read;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::PathBuf;
+use std::path::Path;
 #[derive(Debug)]
 pub enum AuthError {
     Rejected(String),
+    InvalidSession(String),
     TokenFile(std::io::Error),
     Protocol(ProtocolError),
 }
@@ -31,7 +34,8 @@ impl fmt::Display for AuthError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Rejected(reason) => write!(f, "authentication rejected: {reason}"),
-            Self::TokenFile(e) => write!(f, "could not read token file: {e}"),
+            Self::InvalidSession(session) => write!(f, "invalid session name: {session}"),
+            Self::TokenFile(e) => write!(f, "token file error: {e}"),
             Self::Protocol(e) => write!(f, "handshake protocol error: {e}"),
         }
     }
@@ -45,10 +49,23 @@ impl From<ProtocolError> for AuthError {
     }
 }
 
-#[derive(Serialize, Deserialize)]
-struct Challenge {
-    session: String,
-    nonce_hex: [u8; 32],
+impl From<PathError> for AuthError {
+    fn from(error: PathError) -> Self {
+        match error {
+            PathError::InvalidSession(session) => Self::InvalidSession(session),
+            PathError::NoBaseDir => Self::TokenFile(io::Error::new(
+                io::ErrorKind::NotFound,
+                "no state or data directory available",
+            )),
+            PathError::Io(error) => Self::TokenFile(error),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Challenge {
+    pub session: String,
+    pub nonce_hex: [u8; 32],
 } // server → client
 #[derive(Serialize, Deserialize)]
 struct AuthResponse {
@@ -98,13 +115,22 @@ pub fn authenticate<R: Read, W: Write>(
     }
 }
 
-pub fn respond<R: Read, W: Write>(r: &mut R, w: &mut W, token: &str) -> Result<(), AuthError> {
-    //read Challenge
-    let response: Challenge = decode_message(r)?;
+/// Read the server's challenge. Split out of [`respond`] so a client can
+/// inspect the session name and load the matching token before answering.
+pub fn read_challenge<R: Read>(r: &mut R) -> Result<Challenge, AuthError> {
+    let challenge = decode_message(r)?;
+    Ok(challenge)
+}
 
+/// Answer a challenge with the token for the session it names.
+pub fn answer_challenge<W: Write>(
+    w: &mut W,
+    challenge: &Challenge,
+    token: &str,
+) -> Result<(), AuthError> {
     let mut mac = Hmac::<sha2::Sha256>::new_from_slice(token.as_bytes())
         .expect("HMAC-SHA256 accepts any key length");
-    mac.update(&response.nonce_hex);
+    mac.update(&challenge.nonce_hex);
     let out = mac.finalize();
     let tag: [u8; 32] = (*out.as_bytes()).into();
     send_message(
@@ -113,7 +139,11 @@ pub fn respond<R: Read, W: Write>(r: &mut R, w: &mut W, token: &str) -> Result<(
             response_hex: to_hex(tag),
         },
     )?;
-    //read AuthOutcome
+    Ok(())
+}
+
+/// Read the server's verdict after an answer was sent.
+pub fn read_outcome<R: Read>(r: &mut R) -> Result<(), AuthError> {
     let verif: AuthOutcome = decode_message(r)?;
     match verif {
         AuthOutcome::Ok => Ok(()),
@@ -121,14 +151,25 @@ pub fn respond<R: Read, W: Write>(r: &mut R, w: &mut W, token: &str) -> Result<(
     }
 }
 
-pub(super) fn tokens_dir() -> Option<PathBuf> {
-    dirs::state_dir()
-        .or_else(dirs::data_local_dir)
-        .map(|base| base.join("multiplexer/tokens"))
+pub fn respond<R: Read, W: Write>(r: &mut R, w: &mut W, token: &str) -> Result<(), AuthError> {
+    let challenge = read_challenge(r)?;
+    answer_challenge(w, &challenge, token)?;
+    read_outcome(r)
 }
 
-fn token_path(session: &str) -> Option<PathBuf> {
-    tokens_dir().map(|dir| dir.join(format!("{session}.token")))
+/// Read a session token from an explicit token directory. Used by tests and by
+/// [`load_token`].
+fn load_token_in(dir: &Path, session: &str) -> Result<String, AuthError> {
+    let path = paths::token_path_in(dir, session)?;
+    let token = fs::read_to_string(path).map_err(AuthError::TokenFile)?;
+    Ok(token.trim().to_string())
+}
+
+/// Read the token the server wrote for `session`.
+pub fn load_token(session: &str) -> Result<String, AuthError> {
+    let path = paths::token_path(session)?;
+    let token = fs::read_to_string(path).map_err(AuthError::TokenFile)?;
+    Ok(token.trim().to_string())
 }
 
 fn random_bytes<const N: usize>() -> [u8; N] {
@@ -157,28 +198,34 @@ fn generate_token() -> String {
     let key: [u8; 32] = random_bytes();
     to_hex(key)
 }
-fn rotate_token_in(dir: &PathBuf, session: &str) -> Result<String> {
+fn rotate_token_in(dir: &Path, session: &str) -> Result<String, AuthError> {
+    let path = paths::token_path_in(dir, session)?;
     let token = generate_token();
-    fs::create_dir_all(dir)?; // ← creates the tokens dir
-    let path = dir.join(format!("{session}.token"));
+    paths::ensure_private_dir(dir).map_err(AuthError::TokenFile)?; // ← creates the tokens dir
     fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .mode(0o600) // unix: owner read/write only
-        .open(&path)?
-        .write_all(token.as_bytes())?; // ← creates/overwrites the file
+        .open(&path)
+        .map_err(AuthError::TokenFile)?
+        .write_all(token.as_bytes())
+        .map_err(AuthError::TokenFile)?; // ← creates/overwrites the file
     Ok(token)
 }
-pub fn rotate_token(session: &str) {
-    let dir = tokens_dir().unwrap_or_default();
-    let _new_token = rotate_token_in(&dir, session);
+
+/// Generate and store a fresh token for `session`, returning it so the server
+/// can hand it to the auth handshake without re-reading the file.
+pub fn rotate_token(session: &str) -> Result<String, AuthError> {
+    let dir = paths::tokens_dir().ok_or(PathError::NoBaseDir)?;
+    rotate_token_in(&dir, session)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
     use std::thread;
@@ -232,11 +279,54 @@ mod tests {
             fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o600
         );
+        assert_eq!(
+            fs::metadata(&dir.0).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
 
         let second = rotate_token_in(&dir.0, "demo").unwrap();
 
         assert_ne!(first, second, "rotation must produce a new token");
         assert_eq!(fs::read_to_string(&path).unwrap(), second);
+    }
+
+    #[test]
+    fn load_token_in_reads_the_written_token() {
+        let dir = TestDir::new("load");
+        let written = rotate_token_in(&dir.0, "demo").unwrap();
+
+        let loaded = load_token_in(&dir.0, "demo").unwrap();
+
+        assert_eq!(loaded, written);
+    }
+
+    #[test]
+    fn load_token_in_missing_file_is_a_token_error() {
+        let dir = TestDir::new("missing-token");
+
+        let result = load_token_in(&dir.0, "nope");
+
+        assert!(
+            matches!(result, Err(AuthError::TokenFile(_))),
+            "expected a missing token file error, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn token_paths_reject_unsafe_session_names() {
+        let dir = TestDir::new("unsafe");
+
+        let loaded = load_token_in(&dir.0, "../evil");
+        let rotated = rotate_token_in(&dir.0, "a/b");
+
+        assert!(
+            matches!(loaded, Err(AuthError::InvalidSession(_))),
+            "expected load to reject the path, got {loaded:?}"
+        );
+        assert!(
+            matches!(rotated, Err(AuthError::InvalidSession(_))),
+            "expected rotate to reject the path, got {rotated:?}"
+        );
     }
 
     #[test]
@@ -322,6 +412,26 @@ mod tests {
             server_result.is_ok(),
             "server handshake failed: {server_result:?}"
         );
+    }
+
+    #[test]
+    fn split_client_api_completes_the_handshake() {
+        let ((mut server_r, mut server_w), (mut client_r, mut client_w)) = duplex();
+        let token = generate_token();
+        let server_token = token.clone();
+        let server = thread::spawn(move || {
+            authenticate(&mut server_r, &mut server_w, "work", &server_token)
+        });
+
+        let challenge = read_challenge(&mut client_r).expect("server should send a challenge");
+        assert_eq!(challenge.session, "work");
+        answer_challenge(&mut client_w, &challenge, &token).expect("answer should send");
+        read_outcome(&mut client_r).expect("server should accept the token");
+
+        server
+            .join()
+            .expect("server thread panicked")
+            .expect("server handshake should succeed");
     }
 
     #[test]
